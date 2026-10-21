@@ -293,7 +293,7 @@ return function(context, options)
   end
   local finished=B.finished()
   if finished and not B.endSince then B.endSince=clock() B.endAt=now() end
-  return {map=map,difficulty=difficulty,hardcore=hardcore,enabled=enabled,leader=leader,blocked=B.safetyPaused(),finished=finished,settled=finished and clock()-(B.endSince or clock())>=8 or not finished and not B.started()}
+  return {map=map,difficulty=difficulty,hardcore=hardcore,enabled=enabled,leader=leader,blocked=B.safetyPaused(),farming=context.RT and context.RT.farmEnabled==true,finished=finished,settled=finished and clock()-(B.endSince or clock())>=8 or not finished and not B.started()}
  end
  function B.register()
   local F=B.F if not F or not F.reload() then return end
@@ -312,8 +312,9 @@ return function(context, options)
   if B.inTransfer then B.status="Transfers: "..tostring(B.job.stage).." — Harvard queue is paused" return end
   if F.config.lastError then B.blockQueue=true B.status="Transfers stopped: "..F.config.lastError return end
   if not F.config.automatic then B.status="Transfers off — Harvard controls the queue" return end
-  if #F.config.roster<2 or #B.members~=#F.config.roster then
-   B.uncertain=true B.blockQueue=true B.status="Waiting for every registered account's inventory" return
+  local required=B.requiredRoster and B.requiredRoster(B.members) or F.config.roster
+  if #required<1 or #B.members~=#required then
+   B.uncertain=true B.blockQueue=true B.status="Waiting for online accounts to finish loading Harvard" return
   end
   for _,member in ipairs(B.members) do
    if not member.harvard or now()-(member.inventoryAt or 0)>15 then
@@ -544,7 +545,7 @@ return function(context, options)
   local section=ui.section(parent,"Inv++ Account Transfers",2.5,"Reserves useful drops for your other accounts. Finishes the run, trades in the lobby, then queues everyone together using Harvard's party settings.").content
   B.control=ui.toggle(section,"Automatic transfers",function() return B.F and B.F.config.automatic==true end,function(enabled)
    if B.ready then B.F.setAutomatic(enabled) B.lastPoll=-math.huge end
-  end,1,"All registered accounts must run this Harvard version. Auto sell skips gear they need. Replay and queue wait until trades are verified.")
+  end,1,"Online registered accounts must run Harvard. Offline accounts are skipped for new queues; an unfinished item transfer waits for its participants. Auto sell protects useful gear.")
   if track then track(B.control) end
   B.label=ui.caption(section,B.status,2)
  end
@@ -1886,7 +1887,7 @@ return function(C)
   if P.UserId==job.owner and party then
    for _,m in ipairs(job.members) do if not party:FindFirstChild(m.name) then F.status="Waiting for all clients to join" return end end
    for _,v in ipairs(party:GetChildren()) do if v.Name~="mapName" then local allowed=false for _,m in ipairs(job.members) do if m.name==v.Name then allowed=true end end if not allowed then F.fail(job,"Unexpected player joined the fleet queue") return end end end
-   job.stage="departing" job.updated=now() write(jobPath,job)
+   job.stage="departing" job.updated=now() job.startRequestedAt=now() job.startAttempts=(job.startAttempts or 0)+1 write(jobPath,job)
    fire("startDungeon") F.status="Returning to "..job.destination.name
   end
  end
@@ -1948,7 +1949,7 @@ return function(C)
   F.job=job F.holding=job and isMember(job,P.UserId) and job.stage~="complete" and job.stage~="failed" or false
   F.activeJob=F.holding and job.id or nil
   getgenv().InvPlusFleetHold=F.holding
-  if not F.holding then F.status=F.config.lastError or (F.config.automatic and "Watching for useful drops" or "Tracking only") return end
+  if not F.holding then F.status=F.config.lastError or (getgenv().InvPlusHarvardContext and getgenv().InvPlusHarvardContext.InvPlusTransfers and getgenv().InvPlusHarvardContext.InvPlusTransfers.PartyCoordinator and getgenv().InvPlusHarvardContext.InvPlusTransfers.PartyCoordinator.status) or (F.config.automatic and "Watching for useful drops" or "Tracking only") return end
   if job.cancel or not F.config.automatic then F.cancelTrade(job) return end
   if #members~=#job.members then F.cancelTrade(job) F.status="Waiting for all fleet clients" return end
   if job.stage=="departing" then F.status="Waiting for the group teleport" return end
@@ -3774,7 +3775,7 @@ components.coreSettings = function(context)
     if _G.DungeonAutofarmDestruct then
         pcall(_G.DungeonAutofarmDestruct)
     end
-    _G.DungeonAutofarmVersion = "v3.1.0"
+    _G.DungeonAutofarmVersion = "v3.1.2"
     local burstMin, burstMaxSpeed = 18, 28
     local config = {
         tweenWalk = 16,
@@ -5139,7 +5140,7 @@ components.coreSettings = function(context)
             pcall(runtimeState.bugLog, argument, argument2)
         end
         if config.debugPrints then
-            print(("[DQ %s][%s] %s"):format("v3.1.0", argument, argument2))
+            print(("[DQ %s][%s] %s"):format("v3.1.2", argument, argument2))
         end
     end
     local sharedValue7 = {}
@@ -5725,7 +5726,7 @@ components.coreSettings = function(context)
         and type(isfile) == "function"
     local sharedValue18 = -math.huge
     local function snapshot()
-        local value = { __version = "v3.1.0" }
+        local value = { __version = "v3.1.2" }
         for index, entry in ipairs(persist) do
             local value2, value3 = config[entry], context.devSaved and context.devSaved[entry]
             value2 = if value3 then value3.v else value2
@@ -6363,7 +6364,7 @@ components.coreSettings = function(context)
         end
         localPlayer.OnTeleport:Connect(helper4)
     end)
-    context.SCRIPT_VERSION = "v3.1.0"
+    context.SCRIPT_VERSION = "v3.1.2"
     context.SCRIPT_CODENAME = "Groups"
     context.SCRIPT_BUILD_DATE = "21 Oct 2026"
     context.SCRIPT_CHANGELOG = {}
@@ -122866,6 +122867,7 @@ components.partyQueue = function(context)
         if
             (game.PlaceId == 101088859550383 or HLGSF == true)
             and config.gsAutoStart ~= false
+            and config.autoStartDungeon == true
             and not (context.MD and context.MD.halted)
         then
             local value7
@@ -122950,7 +122952,7 @@ components.partyQueue = function(context)
             if value then
                 if not (context.MD and context.MD.halted) then
                     if game.PlaceId ~= 101088859550383 then
-                        if HLGSF ~= true then
+                        if HLGSF ~= true and not context.InvPlusTransfers.PartyCoordinator then
                             sharedValue.levelArrivedAt = sharedValue.levelArrivedAt or argument
                             local valueObject, value19 =
                                 helper5("dungeonStarted"), context.RT and context.RT.preWalk
@@ -124136,7 +124138,7 @@ components.partyQueue = function(context)
     end
     partyQueue.levelling = function(argument)
         for index, account in ipairs((argument or partyQueue.load()).accounts) do
-            if account.enabled ~= false then
+            if account.enabled ~= false and (not context.InvPlusTransfers.PartyCoordinator or context.InvPlusTransfers.PartyCoordinator.nativeOnline(account.name)) then
                 if account.role == "leech" then
                     return true
                 end
@@ -124163,7 +124165,11 @@ components.partyQueue = function(context)
         return partyQueue.levelling(value) and "carry" or "party"
     end
     partyQueue.crowned = function(argument)
-        local accounts = (argument or partyQueue.load()).accounts
+        local accounts = {}
+        for _, account in ipairs((argument or partyQueue.load()).accounts) do
+            local party = context.InvPlusTransfers.PartyCoordinator
+            if not party or party.nativeOnline(account.name) then accounts[#accounts + 1] = account end
+        end
         for index, account in ipairs(accounts) do
             if account.enabled ~= false then
                 if account.role == "leader" then
@@ -124269,7 +124275,7 @@ components.partyQueue = function(context)
     partyQueue.others = function()
         local value, value2 = partyQueue.carry(), {}
         for index, account in ipairs(partyQueue.load().accounts) do
-            if account.enabled ~= false then
+            if account.enabled ~= false and (not context.InvPlusTransfers.PartyCoordinator or context.InvPlusTransfers.PartyCoordinator.nativeOnline(account.name)) then
                 if value then
                     if helper11(account.name) ~= helper11(value.name) then
                         value2[#value2 + 1] = account
@@ -124284,7 +124290,7 @@ components.partyQueue = function(context)
     partyQueue.leechers = function()
         local value = {}
         for index, account in ipairs(partyQueue.load().accounts) do
-            if account.enabled ~= false then
+            if account.enabled ~= false and (not context.InvPlusTransfers.PartyCoordinator or context.InvPlusTransfers.PartyCoordinator.nativeOnline(account.name)) then
                 if account.role == "leech" then
                     value[#value + 1] = account
                 end
@@ -124620,7 +124626,7 @@ components.partyQueue = function(context)
     partyQueue.mates = function()
         local value, value2 = {}, helper11(localPlayer.Name)
         for index, account in ipairs(partyQueue.load().accounts) do
-            if account.enabled ~= false then
+            if account.enabled ~= false and (not context.InvPlusTransfers.PartyCoordinator or context.InvPlusTransfers.PartyCoordinator.nativeOnline(account.name)) then
                 if helper11(account.name) ~= value2 then
                     value[#value + 1] = account
                 end
@@ -142974,7 +142980,8 @@ components.statisticsWebhooks = function(context)
         if not argument2 then
             return
         end
-        local url = helper5(argument2.name)
+        local art = context.InvPlusTransfers.WebhookArt
+        local url = art and art.resolve(argument2) or helper5(argument2.name)
         if not url then
             return
         end
@@ -143371,6 +143378,7 @@ components.statisticsWebhooks = function(context)
                                 ) .. "/" .. tostring(key2)] =
                                     {
                                         name = entry2.name,
+                                        imageId = entry2.imageId,
                                         rarity = helper20(entry2),
                                         cat = tostring(key),
                                         sell = tonumber(entry2.sellPrice) or 0,
@@ -144110,6 +144118,7 @@ components.statisticsWebhooks = function(context)
                     hp = dungeon.hp,
                     upMax = dungeon.upMax,
                     cur = dungeon.cur,
+                    imageId = dungeon.imageId,
                 }
             end
             if rodin then
@@ -144592,6 +144601,7 @@ components.statisticsWebhooks = function(context)
                 hp = value2.hp,
                 upMax = value2.upMax,
                 cur = value2.cur,
+                imageId = value2.imageId,
             }
         end
         local value3 = { who = who }
@@ -168417,6 +168427,7 @@ components.interfaceMainLoop(context)
 assert(loadstring(readfile("Inv++/harvard_tuning.lua"),"Harvard native tuning"))()(context,context.InvPlusTransfers)
 assert(loadstring(readfile("Inv++/harvard_configs.lua"),"Harvard native configs"))()(context,context.InvPlusTransfers)
 assert(loadstring(readfile("Inv++/harvard_statistics.lua"),"Harvard native statistics"))()(context,context.InvPlusTransfers)
+if context.InvPlusTransfers.PartyCoordinator then context.InvPlusTransfers.PartyCoordinator.mount() end
 return context
 ]===],
 ["inv++.lua"]=[=[
@@ -171681,6 +171692,1475 @@ return function(C)
  return S
 end
 ]=],
+["inv++/harvard_art_catalog.lua"]=[=[
+-- DQR catalog: all listed dungeons, raid tiers 1-30, and replicated ability images.
+return {version=1,capturedAt=1792623422,items={
+{name="Agony Orbs",imageId="rbxassetid://6874804465",rarity="epic",kind="ability"},
+{name="Alien Guardian Armor",imageId="http://www.roblox.com/asset/?id=4626314148",rarity="epic",kind="chest"},
+{name="Alien Guardian Helmet",imageId="http://www.roblox.com/asset/?id=4626315259",rarity="epic",kind="helmet"},
+{name="Alien Mage Armor",imageId="http://www.roblox.com/asset/?id=4626314075",rarity="epic",kind="chest"},
+{name="Alien Mage Helmet",imageId="http://www.roblox.com/asset/?id=4626315191",rarity="epic",kind="helmet"},
+{name="Alien Warrior Armor",imageId="http://www.roblox.com/asset/?id=4626313967",rarity="epic",kind="chest"},
+{name="Alien Warrior Helmet",imageId="http://www.roblox.com/asset/?id=4626315123",rarity="epic",kind="helmet"},
+{name="Amethyst Beams",imageId="rbxassetid://11623492062",rarity="epic",kind="ability"},
+{name="Amethyst Blast",imageId="http://www.roblox.com/asset/?id=5251636956",rarity="epic",kind="ability"},
+{name="Amethyst Crescent Spellblade",imageId="rbxassetid://3275251342",rarity="epic",kind="weapon"},
+{name="Amethyst Spelldagger",imageId="rbxassetid://3275250648",rarity="epic",kind="weapon"},
+{name="Amethyst Spellscythe",imageId="rbxassetid://3434835566",rarity="epic",kind="weapon"},
+{name="Ancestral Guardian Armor",imageId="rbxassetid://3275329528",rarity="epic",kind="chest"},
+{name="Ancestral Guardian Helmet",imageId="rbxassetid://3275331790",rarity="epic",kind="helmet"},
+{name="Ancestral Mage Armor",imageId="rbxassetid://3275329787",rarity="epic",kind="chest"},
+{name="Ancestral Mage Hood",imageId="rbxassetid://3275331997",rarity="epic",kind="helmet"},
+{name="Ancestral Warrior Armor",imageId="rbxassetid://3275329281",rarity="epic",kind="chest"},
+{name="Ancestral Warrior Helmet",imageId="rbxassetid://3275331615",rarity="epic",kind="helmet"},
+{name="Ancient Elder Staff",imageId="rbxassetid://3115077571",rarity="epic",kind="weapon"},
+{name="Ancient Lava Axe",imageId="http://www.roblox.com/asset/?id=5250371183",rarity="epic",kind="weapon"},
+{name="Ancient Plate Armor",imageId="rbxassetid://2911804711",rarity="epic",kind="chest"},
+{name="Ancient Plate Helmet",imageId="rbxassetid://2911804895",rarity="epic",kind="helmet"},
+{name="Ancient Ruins Greatsword",imageId="http://www.roblox.com/asset/?id=4510337215",rarity="epic",kind="weapon"},
+{name="Angelic Plate Armor",imageId="rbxassetid://2986401536",rarity="epic",kind="chest"},
+{name="Angelic Plate Helmet",imageId="rbxassetid://2986397312",rarity="epic",kind="helmet"},
+{name="Angelic Staff",imageId="rbxassetid://2968943207",rarity="epic",kind="weapon"},
+{name="Apothecary Staff",imageId="rbxassetid://3038585501",rarity="epic",kind="weapon"},
+{name="Apprentice Staff",imageId="rbxassetid://2611334168",rarity="epic",kind="weapon"},
+{name="Aquatic Defender",imageId="http://www.roblox.com/asset/?id=6187578195",rarity="epic",kind="weapon"},
+{name="Aquatic Executioner",imageId="http://www.roblox.com/asset/?id=6187577570",rarity="epic",kind="weapon"},
+{name="Aquatic Guardian Armor",imageId="http://www.roblox.com/asset/?id=6187578736",rarity="epic",kind="chest"},
+{name="Aquatic Guardian Helmet",imageId="http://www.roblox.com/asset/?id=6187591484",rarity="epic",kind="helmet"},
+{name="Aquatic Mage Armor",imageId="http://www.roblox.com/asset/?id=6187578814",rarity="epic",kind="chest"},
+{name="Aquatic Mage Helmet",imageId="http://www.roblox.com/asset/?id=6187498558",rarity="epic",kind="helmet"},
+{name="Aquatic Scimitars",imageId="http://www.roblox.com/asset/?id=6187577643",rarity="epic",kind="weapon"},
+{name="Aquatic Smite",imageId="http://www.roblox.com/asset/?id=6207983767",rarity="epic",kind="ability"},
+{name="Aquatic Spear",imageId="http://www.roblox.com/asset/?id=6187577821",rarity="epic",kind="weapon"},
+{name="Aquatic Warrior Armor",imageId="http://www.roblox.com/asset/?id=6187578647",rarity="epic",kind="chest"},
+{name="Aquatic Warrior Helmet",imageId="http://www.roblox.com/asset/?id=6187573164",rarity="epic",kind="helmet"},
+{name="Arcane Barrage",imageId="rbxassetid://2859306211",rarity="uncommon",kind="ability"},
+{name="Arcane Greatstaff",imageId="rbxassetid://2919773900",rarity="epic",kind="weapon"},
+{name="Arcane Orb Staff",imageId="rbxassetid://2968942306",rarity="epic",kind="weapon"},
+{name="Arcane Spray",imageId="rbxassetid://2744123452",rarity="uncommon",kind="ability"},
+{name="Arch-Mage Crown",imageId="rbxassetid://3039045704",rarity="epic",kind="helmet"},
+{name="Arch-Mage Robes",imageId="rbxassetid://3039043730",rarity="epic",kind="chest"},
+{name="Arclight Battlestaff",imageId="rbxassetid://3038586904",rarity="epic",kind="weapon"},
+{name="Arrow Barrage",imageId="http://www.roblox.com/asset/?id=4452299440",rarity="epic",kind="ability"},
+{name="Arrow Rain",imageId="http://www.roblox.com/asset/?id=4111026362",rarity="rare",kind="ability"},
+{name="Aura of Life",imageId="rbxassetid://2923911354",rarity="uncommon",kind="ability"},
+{name="Azerite Greatstaff",imageId="rbxassetid://91992159769625",rarity="epic",kind="weapon"},
+{name="Banished Greatsword",imageId="http://www.roblox.com/asset/?id=4452305229",rarity="epic",kind="weapon"},
+{name="Barbaric Guardian Armor",imageId="rbxassetid://3039043317",rarity="epic",kind="chest"},
+{name="Barbaric Guardian Helmet",imageId="rbxassetid://3039045264",rarity="epic",kind="helmet"},
+{name="Barbaric Mage Armor",imageId="rbxassetid://3039043129",rarity="epic",kind="chest"},
+{name="Barbaric Mage Crown",imageId="rbxassetid://3039045057",rarity="epic",kind="helmet"},
+{name="Barbaric Warrior Armor",imageId="rbxassetid://3039042794",rarity="epic",kind="chest"},
+{name="Barbaric Warrior Helmet",imageId="rbxassetid://3039044803",rarity="epic",kind="helmet"},
+{name="Battle Shout",imageId="rbxassetid://2621050486",rarity="uncommon",kind="ability"},
+{name="Beast Cleaver",imageId="rbxassetid://3038587900",rarity="epic",kind="weapon"},
+{name="Beastly Guardian Armor",imageId="rbxassetid://3039043877",rarity="epic",kind="chest"},
+{name="Beastly Guardian Helmet",imageId="http://www.roblox.com/asset/?id=4316782204",rarity="epic",kind="helmet"},
+{name="Beastly Warrior Armor",imageId="rbxassetid://3039043561",rarity="epic",kind="chest"},
+{name="Beastly Warrior Helmet",imageId="http://www.roblox.com/asset/?id=4316781866",rarity="epic",kind="helmet"},
+{name="Beastmaster Spell Scythe",imageId="rbxassetid://3038587428",rarity="legendary",kind="weapon"},
+{name="Beastmaster War Scythe",imageId="rbxassetid://3038589569",rarity="legendary",kind="weapon"},
+{name="Berserk",imageId="rbxassetid://3276265847",rarity="epic",kind="ability"},
+{name="Bioforged Cog Spellblade",imageId="http://www.roblox.com/asset/?id=4284691511",rarity="epic",kind="weapon"},
+{name="Bioforged Greataxe",imageId="http://www.roblox.com/asset/?id=4110988298",rarity="epic",kind="weapon"},
+{name="Bioforged Greatsword",imageId="http://www.roblox.com/asset/?id=4110960933",rarity="epic",kind="weapon"},
+{name="Bioforged Quickblade",imageId="http://www.roblox.com/asset/?id=4284690067",rarity="epic",kind="weapon"},
+{name="Bioforged Reinforced Slicer",imageId="http://www.roblox.com/asset/?id=4110961799",rarity="epic",kind="weapon"},
+{name="Blacksteel Greatsword",imageId="rbxassetid://3115074050",rarity="epic",kind="weapon"},
+{name="Blade Barrage",imageId="rbxassetid://11623492658",rarity="epic",kind="ability"},
+{name="Blade Fall",imageId="http://www.roblox.com/asset/?id=5251637214",rarity="epic",kind="ability"},
+{name="Blade Revolver",imageId="rbxassetid://3484481154",rarity="epic",kind="ability"},
+{name="Blade Storm",imageId="rbxassetid://3484482431",rarity="epic",kind="ability"},
+{name="Blade Throw",imageId="rbxassetid://3040144692",rarity="epic",kind="ability"},
+{name="Blazing Star",imageId="http://www.roblox.com/asset/?id=4626316008",rarity="epic",kind="weapon"},
+{name="Blessed Lightpost",imageId="http://www.roblox.com/asset/?id=4510337783",rarity="epic",kind="weapon"},
+{name="Bloodthirster",imageId="rbxassetid://3434834192",rarity="epic",kind="weapon"},
+{name="Blue Fireball",imageId="http://www.roblox.com/asset/?id=384797849",rarity="common",kind="ability"},
+{name="Blue Wizard Hat",imageId="rbxassetid://2703264993",rarity="epic",kind="helmet"},
+{name="Blue Wizard Robes",imageId="rbxassetid://2703234901",rarity="epic",kind="chest"},
+{name="Bluefire Staff",imageId="rbxassetid://2919771831",rarity="epic",kind="weapon"},
+{name="Bone Scythe",imageId="rbxassetid://3275245596",rarity="epic",kind="weapon"},
+{name="Bronze Dagger",imageId="rbxassetid://2511707072",rarity="epic",kind="weapon"},
+{name="Bronze Longsword",imageId="rbxassetid://2521642665",rarity="epic",kind="weapon"},
+{name="Burned Guardian Armor",imageId="http://www.roblox.com/asset/?id=5250433369",rarity="epic",kind="chest"},
+{name="Burned Guardian Helmet",imageId="http://www.roblox.com/asset/?id=5250430797",rarity="epic",kind="helmet"},
+{name="Burned Mage Armor",imageId="http://www.roblox.com/asset/?id=5250433628",rarity="epic",kind="chest"},
+{name="Burned Mage Helmet",imageId="http://www.roblox.com/asset/?id=5250431075",rarity="epic",kind="helmet"},
+{name="Burned Warrior Armor",imageId="http://www.roblox.com/asset/?id=5250434060",rarity="epic",kind="chest"},
+{name="Burned Warrior Helmet",imageId="http://www.roblox.com/asset/?id=5250431379",rarity="epic",kind="helmet"},
+{name="Captain's Anchor",imageId="http://www.roblox.com/asset/?id=3732365900",rarity="epic",kind="weapon"},
+{name="Celestial Fire Staff",imageId="rbxassetid://3038586712",rarity="epic",kind="weapon"},
+{name="Chain Heal",imageId="rbxassetid://3040144898",rarity="rare",kind="ability"},
+{name="Chain Lightning",imageId="http://www.roblox.com/asset/?id=4452299003",rarity="epic",kind="ability"},
+{name="Chained Energy Blasts",imageId="http://www.roblox.com/asset/?id=4111034625",rarity="rare",kind="ability"},
+{name="Chromatic Rain",imageId="http://www.roblox.com/asset/?id=4111033824",rarity="epic",kind="ability"},
+{name="Coldstone Sword",imageId="rbxassetid://2908342666",rarity="epic",kind="weapon"},
+{name="Commander's Guardian Armor",imageId="http://www.roblox.com/asset/?id=4626313841",rarity="epic",kind="chest"},
+{name="Commander's Guardian Helmet",imageId="http://www.roblox.com/asset/?id=4626314634",rarity="epic",kind="helmet"},
+{name="Commander's Mage Armor",imageId="http://www.roblox.com/asset/?id=4626313733",rarity="epic",kind="chest"},
+{name="Commander's Mage Helmet",imageId="http://www.roblox.com/asset/?id=4626315033",rarity="epic",kind="helmet"},
+{name="Commander's Warrior Armor",imageId="http://www.roblox.com/asset/?id=4626313508",rarity="epic",kind="chest"},
+{name="Commander's Warrior Helmet",imageId="http://www.roblox.com/asset/?id=4626314519",rarity="epic",kind="helmet"},
+{name="Cracked Tooth Cleaver",imageId="http://www.roblox.com/asset/?id=3732364852",rarity="epic",kind="weapon"},
+{name="Crimson Kris",imageId="rbxassetid://3275247695",rarity="epic",kind="weapon"},
+{name="Crimson Spellblade",imageId="rbxassetid://2919772448",rarity="epic",kind="weapon"},
+{name="Crusader Armor",imageId="rbxassetid://2703235995",rarity="epic",kind="chest"},
+{name="Crusader Helmet",imageId="rbxassetid://2703265983",rarity="epic",kind="helmet"},
+{name="Crystalized Greatsword",imageId="rbxassetid://2513301363",rarity="legendary",kind="weapon"},
+{name="Crystalline Cannon",imageId="rbxassetid://6874804900",rarity="epic",kind="ability"},
+{name="Crystalline Guardian Armor",imageId="rbxassetid://6871198713",rarity="epic",kind="chest"},
+{name="Crystalline Guardian Helmet",imageId="rbxassetid://6871200261",rarity="epic",kind="helmet"},
+{name="Crystalline Mage Armor",imageId="rbxassetid://6871198434",rarity="epic",kind="chest"},
+{name="Crystalline Mage Helmet",imageId="rbxassetid://6871200160",rarity="epic",kind="helmet"},
+{name="Crystalline Shard Staff",imageId="rbxassetid://6871202156",rarity="epic",kind="weapon"},
+{name="Crystalline Warrior Armor",imageId="rbxassetid://6871198282",rarity="epic",kind="chest"},
+{name="Crystalline Warrior Helmet",imageId="rbxassetid://6871200060",rarity="epic",kind="helmet"},
+{name="Cultist Blade",imageId="rbxassetid://2968934418",rarity="epic",kind="weapon"},
+{name="Dark Ice Blades",imageId="rbxassetid://3434833814",rarity="epic",kind="weapon"},
+{name="Dark Priest Staff",imageId="rbxassetid://2968944355",rarity="epic",kind="weapon"},
+{name="Darkstone Greatsword",imageId="http://www.roblox.com/asset/?id=5250374941",rarity="epic",kind="weapon"},
+{name="Daybreak And Gildensong",imageId="rbxassetid://11558824087",rarity="legendary",kind="weapon"},
+{name="Demon Lord's Greatstaff",imageId="rbxassetid://3115077748",rarity="epic",kind="weapon"},
+{name="Demonic Curse",imageId="http://www.roblox.com/asset/?id=4510338450",rarity="epic",kind="ability"},
+{name="Demonic Greatsword",imageId="rbxassetid://2820209684",rarity="epic",kind="weapon"},
+{name="Demonic Spellblade",imageId="rbxassetid://2820209799",rarity="epic",kind="weapon"},
+{name="Demonic Spikes",imageId="rbxassetid://3115156334",rarity="rare",kind="ability"},
+{name="Demonic Strike",imageId="rbxassetid://2985732756",rarity="rare",kind="ability"},
+{name="Desert Fury",imageId="rbxassetid://2718089746",rarity="legendary",kind="weapon"},
+{name="Devilish Greataxe",imageId="rbxassetid://2968935966",rarity="epic",kind="weapon"},
+{name="Diamond Encrusted Blade",imageId="rbxassetid://2521642545",rarity="epic",kind="weapon"},
+{name="Dracani Flanged Mace",imageId="rbxassetid://11558821665",rarity="epic",kind="weapon"},
+{name="Dracani Gilded Lance",imageId="rbxassetid://11558823237",rarity="epic",kind="weapon"},
+{name="Dracani Gilded Staff",imageId="rbxassetid://11558823417",rarity="epic",kind="weapon"},
+{name="Dracani Gilded Sword",imageId="rbxassetid://11558821429",rarity="epic",kind="weapon"},
+{name="Dracani Guardian Armor",imageId="http://www.roblox.com/asset/?id=11558824644",rarity="epic",kind="chest"},
+{name="Dracani Guardian Helmet",imageId="http://www.roblox.com/asset/?id=11558827099",rarity="epic",kind="helmet"},
+{name="Dracani Mage Armor",imageId="http://www.roblox.com/asset/?id=11558824284",rarity="epic",kind="chest"},
+{name="Dracani Mage Helmet",imageId="http://www.roblox.com/asset/?id=11558826716",rarity="epic",kind="helmet"},
+{name="Dracani Royal Glaive",imageId="rbxassetid://11558821878",rarity="epic",kind="weapon"},
+{name="Dracani Spellclaws",imageId="rbxassetid://11558822782",rarity="epic",kind="weapon"},
+{name="Dracani Warrior Armor",imageId="http://www.roblox.com/asset/?id=11558824445",rarity="epic",kind="chest"},
+{name="Dracani Warrior Helmet",imageId="http://www.roblox.com/asset/?id=11558826954",rarity="epic",kind="helmet"},
+{name="Dragon Slayer Blade",imageId="rbxassetid://2521642419",rarity="epic",kind="weapon"},
+{name="Dragon's Claw Scythe",imageId="rbxassetid://3115076733",rarity="epic",kind="weapon"},
+{name="Dual Ancient Daggers",imageId="rbxassetid://3115074824",rarity="epic",kind="weapon"},
+{name="Dual Arcane Slicers",imageId="rbxassetid://3434835726",rarity="epic",kind="weapon"},
+{name="Dual Arcane Spelldaggers",imageId="rbxassetid://3115077234",rarity="epic",kind="weapon"},
+{name="Dual Bioforged Drills",imageId="http://www.roblox.com/asset/?id=4284691047",rarity="legendary",kind="weapon"},
+{name="Dual Bioforged Spelldaggers",imageId="http://www.roblox.com/asset/?id=4110990537",rarity="epic",kind="weapon"},
+{name="Dual Bladed Mage Daggers",imageId="http://www.roblox.com/asset/?id=3733461587",rarity="epic",kind="weapon"},
+{name="Dual Crimson Daggers",imageId="rbxassetid://3434832894",rarity="epic",kind="weapon"},
+{name="Dual Crystalized Knives",imageId="http://www.roblox.com/asset/?id=4626316242",rarity="epic",kind="weapon"},
+{name="Dual Cutlasses",imageId="rbxassetid://3038587751",rarity="epic",kind="weapon"},
+{name="Dual Elegant Mage Fans",imageId="rbxassetid://3275252617",rarity="epic",kind="weapon"},
+{name="Dual Fist Blades",imageId="http://www.roblox.com/asset/?id=5250375285",rarity="epic",kind="weapon"},
+{name="Dual Flatblade Slicers",imageId="rbxassetid://3115074302",rarity="epic",kind="weapon"},
+{name="Dual Frozen Blades",imageId="rbxassetid://3038588974",rarity="epic",kind="weapon"},
+{name="Dual Fusion Blades",imageId="http://www.roblox.com/asset/?id=4110959982",rarity="epic",kind="weapon"},
+{name="Dual Godforged Blades",imageId="http://www.roblox.com/asset/?id=4452305555",rarity="legendary",kind="weapon"},
+{name="Dual Hellfire Blades",imageId="http://www.roblox.com/asset/?id=5250370880",rarity="epic",kind="weapon"},
+{name="Dual Hextech Spelldaggers",imageId="http://www.roblox.com/asset/?id=4110990098",rarity="epic",kind="weapon"},
+{name="Dual Infernal Daggers",imageId="rbxassetid://3275246477",rarity="epic",kind="weapon"},
+{name="Dual Infernal Scimitars",imageId="rbxassetid://3434834028",rarity="epic",kind="weapon"},
+{name="Dual Inferno Slicers",imageId="rbxassetid://3038589142",rarity="epic",kind="weapon"},
+{name="Dual Jade Daggers",imageId="rbxassetid://3038589317",rarity="epic",kind="weapon"},
+{name="Dual Magma Fangs",imageId="rbxassetid://3434833631",rarity="epic",kind="weapon"},
+{name="Dual Magma Shields",imageId="http://www.roblox.com/asset/?id=5250371513",rarity="epic",kind="weapon"},
+{name="Dual Nature Vines",imageId="http://www.roblox.com/asset/?id=4452305794",rarity="epic",kind="weapon"},
+{name="Dual Ocean Fists",imageId="http://www.roblox.com/asset/?id=3733462001",rarity="epic",kind="weapon"},
+{name="Dual Phantom Axes",imageId="http://www.roblox.com/asset/?id=3732507585",rarity="epic",kind="weapon"},
+{name="Dual Phantom Daggers",imageId="http://www.roblox.com/asset/?id=3732507862",rarity="epic",kind="weapon"},
+{name="Dual Phantom Defenders",imageId="http://www.roblox.com/asset/?id=3733463235",rarity="epic",kind="weapon"},
+{name="Dual Phoenix Daggers",imageId="rbxassetid://3115075941",rarity="legendary",kind="weapon"},
+{name="Dual Pirate Cutlasses",imageId="http://www.roblox.com/asset/?id=3732365436",rarity="epic",kind="weapon"},
+{name="Dual Razor Slicers",imageId="rbxassetid://3434833153",rarity="epic",kind="weapon"},
+{name="Dual Royal Axes",imageId="rbxassetid://3038588030",rarity="epic",kind="weapon"},
+{name="Dual Samurai Sickles",imageId="rbxassetid://3275247106",rarity="epic",kind="weapon"},
+{name="Dual Samurai Stars",imageId="rbxassetid://3275246758",rarity="epic",kind="weapon"},
+{name="Dual Sapphire Slicers",imageId="rbxassetid://3115073793",rarity="epic",kind="weapon"},
+{name="Dual Serrated Knives",imageId="http://www.roblox.com/asset/?id=3732365184",rarity="epic",kind="weapon"},
+{name="Dual Sinister Blades",imageId="http://www.roblox.com/asset/?id=4452305407",rarity="epic",kind="weapon"},
+{name="Dual Solar Blades",imageId="http://www.roblox.com/asset/?id=4626316085",rarity="epic",kind="weapon"},
+{name="Dual Toxic Daggers",imageId="http://www.roblox.com/asset/?id=3734805582",rarity="epic",kind="weapon"},
+{name="Eagle Staff",imageId="rbxassetid://3038584750",rarity="epic",kind="weapon"},
+{name="Earth Clap",imageId="rbxassetid://3276264186",rarity="rare",kind="ability"},
+{name="Earth Kick",imageId="rbxassetid://3484482939",rarity="uncommon",kind="ability"},
+{name="Earth Maul",imageId="http://www.roblox.com/asset/?id=4510337377",rarity="epic",kind="weapon"},
+{name="Earth Spikes",imageId="http://www.roblox.com/asset/?id=3734464227",rarity="uncommon",kind="ability"},
+{name="Earth Staff",imageId="http://www.roblox.com/asset/?id=4510337654",rarity="epic",kind="weapon"},
+{name="Earth Wand",imageId="rbxassetid://2968942777",rarity="epic",kind="weapon"},
+{name="Edenâ€™s Reaper",imageId="rbxassetid://103550525606563",rarity="ultimate",kind="weapon"},
+{name="Edenâ€™s Vengeance",imageId="rbxassetid://102574845507566",rarity="ultimate",kind="weapon"},
+{name="Eldenbark Greatstaff",imageId="rbxassetid://6871202291",rarity="legendary",kind="weapon"},
+{name="Eldenbark Greatsword",imageId="rbxassetid://6871201475",rarity="legendary",kind="weapon"},
+{name="Eldenbark Guardian Armor",imageId="rbxassetid://6871199225",rarity="epic",kind="chest"},
+{name="Eldenbark Guardian Helmet",imageId="rbxassetid://6871200604",rarity="epic",kind="helmet"},
+{name="Eldenbark Mage Armor",imageId="rbxassetid://6871199079",rarity="epic",kind="chest"},
+{name="Eldenbark Mage Helmet",imageId="rbxassetid://6871200501",rarity="epic",kind="helmet"},
+{name="Eldenbark Warrior Armor",imageId="rbxassetid://6871198942",rarity="epic",kind="chest"},
+{name="Eldenbark Warrior Helmet",imageId="rbxassetid://6871200392",rarity="epic",kind="helmet"},
+{name="Elder Void Wand",imageId="rbxassetid://2919775696",rarity="epic",kind="weapon"},
+{name="Electric Boom",imageId="rbxassetid://3040145096",rarity="epic",kind="ability"},
+{name="Electric Field",imageId="http://www.roblox.com/asset/?id=4626316975",rarity="epic",kind="ability"},
+{name="Electric Grinder",imageId="http://www.roblox.com/asset/?id=4510338336",rarity="epic",kind="ability"},
+{name="Electric Slash",imageId="rbxassetid://3484482695",rarity="rare",kind="ability"},
+{name="Electron Spell Dagger",imageId="http://www.roblox.com/asset/?id=4626315362",rarity="epic",kind="weapon"},
+{name="Elementalist Hood",imageId="rbxassetid://2703265858",rarity="epic",kind="helmet"},
+{name="Elementalist Robes",imageId="rbxassetid://2703235750",rarity="epic",kind="chest"},
+{name="Elementalist Staff",imageId="rbxassetid://3434834992",rarity="epic",kind="weapon"},
+{name="Elite Ancient Plate Armor",imageId="rbxassetid://2911805868",rarity="epic",kind="chest"},
+{name="Elite Ancient Plate Helmet",imageId="rbxassetid://2574377368",rarity="epic",kind="helmet"},
+{name="Elite Mage Plate Armor",imageId="rbxassetid://2911805615",rarity="epic",kind="chest"},
+{name="Elite Mage Plate Helmet",imageId="rbxassetid://2574376938",rarity="epic",kind="helmet"},
+{name="Elite Warlord Plate Armor",imageId="rbxassetid://2911805385",rarity="epic",kind="chest"},
+{name="Elite Warlord Plate Helmet",imageId="rbxassetid://2574377179",rarity="epic",kind="helmet"},
+{name="Elven Staff",imageId="rbxassetid://3038585329",rarity="epic",kind="weapon"},
+{name="Empowered Crystal Blade",imageId="rbxassetid://2968934693",rarity="epic",kind="weapon"},
+{name="Enchanted Demonic Greataxe",imageId="rbxassetid://3115075699",rarity="epic",kind="weapon"},
+{name="Enchanted Sea Axes",imageId="http://www.roblox.com/asset/?id=6187578086",rarity="epic",kind="weapon"},
+{name="Enchanted Sea Daggers",imageId="http://www.roblox.com/asset/?id=6187578293",rarity="epic",kind="weapon"},
+{name="Enchanted Serpent Daggers",imageId="http://www.roblox.com/asset/?id=6187578471",rarity="epic",kind="weapon"},
+{name="Enchanted Shard Dual Blade",imageId="rbxassetid://6871200984",rarity="epic",kind="weapon"},
+{name="Enchanted Shard Spelldagger",imageId="rbxassetid://6871201839",rarity="epic",kind="weapon"},
+{name="Enchanted Shard Staff",imageId="rbxassetid://6871201943",rarity="epic",kind="weapon"},
+{name="Enchanted Shard War Axe",imageId="rbxassetid://6871201128",rarity="epic",kind="weapon"},
+{name="Enchanted Shuriken",imageId="rbxassetid://3276264470",rarity="epic",kind="ability"},
+{name="Enchanted Spinning Blades",imageId="rbxassetid://2985732294",rarity="epic",kind="ability"},
+{name="Enchanted Sword",imageId="rbxassetid://2521658215",rarity="epic",kind="weapon"},
+{name="Energized Spell Dagger",imageId="http://www.roblox.com/asset/?id=4626315727",rarity="epic",kind="weapon"},
+{name="Energy Orb",imageId="http://www.roblox.com/asset/?id=4626316892",rarity="epic",kind="ability"},
+{name="Enhanced Inner Focus",imageId="http://www.roblox.com/asset/?id=5251638369",rarity="legendary",kind="ability"},
+{name="Enhanced Inner Rage",imageId="http://www.roblox.com/asset/?id=5251638613",rarity="legendary",kind="ability"},
+{name="Ethereal Greataxe",imageId="rbxassetid://3038588719",rarity="epic",kind="weapon"},
+{name="Explosive Mine",imageId="http://www.roblox.com/asset/?id=4626316807",rarity="epic",kind="ability"},
+{name="Explosive Punch",imageId="http://www.roblox.com/asset/?id=4284636463",rarity="epic",kind="ability"},
+{name="Fire Bomb",imageId="rbxassetid://2923910451",rarity="uncommon",kind="ability"},
+{name="Fire and Ice Staff",imageId="rbxassetid://3038587105",rarity="epic",kind="weapon"},
+{name="Fireball",imageId="rbxassetid://114317124",rarity="common",kind="ability"},
+{name="Flame Cyclone",imageId="rbxassetid://3276266137",rarity="epic",kind="ability"},
+{name="Flame Shuriken",imageId="rbxassetid://8349313620",rarity="epic",kind="ability"},
+{name="Flame Staff",imageId="rbxassetid://2718086572",rarity="epic",kind="weapon"},
+{name="Flame Strike",imageId="rbxassetid://8349313743",rarity="rare",kind="ability"},
+{name="Focus Beam",imageId="http://www.roblox.com/asset/?id=4626316615",rarity="epic",kind="ability"},
+{name="Forest Vine Hatchet",imageId="rbxassetid://6871201258",rarity="epic",kind="weapon"},
+{name="Forest Vine Spellblade",imageId="rbxassetid://6871202056",rarity="epic",kind="weapon"},
+{name="Forgotten Army",imageId="rbxassetid://3484489972",rarity="epic",kind="ability"},
+{name="Forgotten Guardian Armor",imageId="rbxassetid://2911728222",rarity="epic",kind="chest"},
+{name="Forgotten Guardian Helmet",imageId="rbxassetid://2911731800",rarity="epic",kind="helmet"},
+{name="Forgotten Mage Hood",imageId="rbxassetid://2911732046",rarity="epic",kind="helmet"},
+{name="Forgotten Mage Robes",imageId="rbxassetid://2911728506",rarity="epic",kind="chest"},
+{name="Forgotten Warrior Armor",imageId="rbxassetid://2911727978",rarity="epic",kind="chest"},
+{name="Forgotten Warrior Helmet",imageId="rbxassetid://2911731525",rarity="epic",kind="helmet"},
+{name="Frost Cone",imageId="http://www.roblox.com/asset/?id=8349313309",rarity="rare",kind="ability"},
+{name="Frost Giant Greataxe",imageId="rbxassetid://8349309782",rarity="epic",kind="weapon"},
+{name="Frozen Greatsword",imageId="rbxassetid://2908343473",rarity="epic",kind="weapon"},
+{name="Frozen Lord's Greatsword",imageId="rbxassetid://2820229906",rarity="epic",kind="weapon"},
+{name="Fungal Guardian Armor",imageId="rbxassetid://6871198084",rarity="epic",kind="chest"},
+{name="Fungal Guardian Helmet",imageId="rbxassetid://6871199914",rarity="epic",kind="helmet"},
+{name="Fungal Lance",imageId="rbxassetid://6871200860",rarity="epic",kind="weapon"},
+{name="Fungal Mage Armor",imageId="rbxassetid://6871197922",rarity="epic",kind="chest"},
+{name="Fungal Mage Helmet",imageId="rbxassetid://6871199809",rarity="epic",kind="helmet"},
+{name="Fungal Pike",imageId="rbxassetid://6871201596",rarity="epic",kind="weapon"},
+{name="Fungal Poison",imageId="rbxassetid://6874804603",rarity="rare",kind="ability"},
+{name="Fungal Staff",imageId="rbxassetid://6871201707",rarity="epic",kind="weapon"},
+{name="Fungal Warhammer",imageId="rbxassetid://6871200754",rarity="epic",kind="weapon"},
+{name="Fungal Warrior Armor",imageId="rbxassetid://6871197790",rarity="epic",kind="chest"},
+{name="Fungal Warrior Helmet",imageId="rbxassetid://6871199674",rarity="epic",kind="helmet"},
+{name="Fusion Greatsword",imageId="http://www.roblox.com/asset/?id=4110960375",rarity="epic",kind="weapon"},
+{name="Fusion Magic Keyblade",imageId="http://www.roblox.com/asset/?id=4284691881",rarity="epic",kind="weapon"},
+{name="Galactic Dual Blades",imageId="http://www.roblox.com/asset/?id=4626316477",rarity="legendary",kind="weapon"},
+{name="Galactic Pike",imageId="http://www.roblox.com/asset/?id=4626315903",rarity="legendary",kind="weapon"},
+{name="Gale Barrage",imageId="rbxassetid://8349313462",rarity="epic",kind="ability"},
+{name="Gale Slice",imageId="rbxassetid://2823986768",rarity="uncommon",kind="ability"},
+{name="Geyser",imageId="rbxassetid://8349314058",rarity="epic",kind="ability"},
+{name="Ghostly Cannon Barrage",imageId="rbxassetid://2985731919",rarity="uncommon",kind="ability"},
+{name="Ghostly Greataxe",imageId="rbxassetid://2521642930",rarity="epic",kind="weapon"},
+{name="Ghostly Rampage",imageId="rbxassetid://3276264842",rarity="rare",kind="ability"},
+{name="Ghoul Slayer",imageId="rbxassetid://2511715973",rarity="epic",kind="weapon"},
+{name="Giant Royal Axe",imageId="rbxassetid://3434833443",rarity="epic",kind="weapon"},
+{name="Gildenscale Guardian Armor",imageId="http://www.roblox.com/asset/?id=11558830025",rarity="epic",kind="chest"},
+{name="Gildenscale Guardian Helmet",imageId="http://www.roblox.com/asset/?id=11558828522",rarity="epic",kind="helmet"},
+{name="Gildenscale Mage Armor",imageId="http://www.roblox.com/asset/?id=11558826292",rarity="epic",kind="chest"},
+{name="Gildenscale Mage Helmet",imageId="http://www.roblox.com/asset/?id=11558828185",rarity="epic",kind="helmet"},
+{name="Gildenscale Oath And Aegis",imageId="rbxassetid://11558822668",rarity="legendary",kind="weapon"},
+{name="Gildenscale Warrior Armor",imageId="http://www.roblox.com/asset/?id=11558826454",rarity="epic",kind="chest"},
+{name="Gildenscale Warrior Helmet",imageId="http://www.roblox.com/asset/?id=11558828377",rarity="epic",kind="helmet"},
+{name="Glacial Blows",imageId="rbxassetid://3040144363",rarity="rare",kind="ability"},
+{name="Glacial Greatsword",imageId="rbxassetid://2908344917",rarity="epic",kind="weapon"},
+{name="Glorious Guardian Armor",imageId="rbxassetid://3114574459",rarity="epic",kind="chest"},
+{name="Glorious Guardian Helmet",imageId="rbxassetid://3114574581",rarity="epic",kind="helmet"},
+{name="Glorious Mage Armor",imageId="rbxassetid://3114574188",rarity="epic",kind="chest"},
+{name="Glorious Mage Hood",imageId="rbxassetid://3114574312",rarity="epic",kind="helmet"},
+{name="Glorious Warrior Armor",imageId="rbxassetid://3114573834",rarity="epic",kind="chest"},
+{name="Glorious Warrior Helmet",imageId="rbxassetid://3114574029",rarity="epic",kind="helmet"},
+{name="Goblin Cleaver",imageId="rbxassetid://3038587590",rarity="epic",kind="weapon"},
+{name="God Spear",imageId="rbxassetid://11623492807",rarity="epic",kind="ability"},
+{name="Godforged Greatstaff",imageId="http://www.roblox.com/asset/?id=4452306101",rarity="legendary",kind="weapon"},
+{name="Godly Guardian Armor",imageId="rbxassetid://2986401967",rarity="epic",kind="chest"},
+{name="Godly Guardian Helmet",imageId="rbxassetid://2986398108",rarity="epic",kind="helmet"},
+{name="Godly Mage Helmet",imageId="rbxassetid://2986398325",rarity="epic",kind="helmet"},
+{name="Godly Mage Robes",imageId="rbxassetid://2986402449",rarity="epic",kind="chest"},
+{name="Godly Warrior Armor",imageId="rbxassetid://2986402737",rarity="epic",kind="chest"},
+{name="Godly Warrior Helmet",imageId="rbxassetid://2986398641",rarity="epic",kind="helmet"},
+{name="Godsword",imageId="rbxassetid://2908345655",rarity="epic",kind="weapon"},
+{name="Grand Claymore",imageId="rbxassetid://2521613927",rarity="epic",kind="weapon"},
+{name="Granite Maul",imageId="rbxassetid://2718087611",rarity="epic",kind="weapon"},
+{name="Greater Dark Scythe",imageId="rbxassetid://2968942570",rarity="epic",kind="weapon"},
+{name="Greater Prophet Staff",imageId="rbxassetid://2968944786",rarity="epic",kind="weapon"},
+{name="Ground Slam",imageId="rbxassetid://2924294282",rarity="uncommon",kind="ability"},
+{name="Ground Stomp",imageId="http://www.roblox.com/asset/?id=4452299205",rarity="epic",kind="ability"},
+{name="Guardian Armor",imageId="rbxassetid://2703236768",rarity="epic",kind="chest"},
+{name="Guardian Call",imageId="rbxassetid://2985915527",rarity="epic",kind="ability"},
+{name="Guardian Helmet",imageId="rbxassetid://2703266523",rarity="epic",kind="helmet"},
+{name="Guardian Roar",imageId="rbxassetid://3276266442",rarity="rare",kind="ability"},
+{name="Guardian's Blessing",imageId="rbxassetid://3040146215",rarity="rare",kind="ability"},
+{name="Gungnir",imageId="rbxassetid://8349310824",rarity="legendary",kind="weapon"},
+{name="Hand Cannon",imageId="rbxassetid://3276263848",rarity="uncommon",kind="ability"},
+{name="Hardened Ice Sword",imageId="rbxassetid://2908344004",rarity="epic",kind="weapon"},
+{name="Heavenly Greatsword",imageId="rbxassetid://3038588310",rarity="epic",kind="weapon"},
+{name="Heavenly Guardian Armor",imageId="http://www.roblox.com/asset/?id=4452306696",rarity="epic",kind="chest"},
+{name="Heavenly Guardian Helmet",imageId="http://www.roblox.com/asset/?id=4452307374",rarity="epic",kind="helmet"},
+{name="Heavenly Mage Armor",imageId="http://www.roblox.com/asset/?id=4452306487",rarity="epic",kind="chest"},
+{name="Heavenly Mage Helmet",imageId="http://www.roblox.com/asset/?id=4452307153",rarity="epic",kind="helmet"},
+{name="Heavenly Warrior Armor",imageId="http://www.roblox.com/asset/?id=4452306305",rarity="epic",kind="chest"},
+{name="Heavenly Warrior Helmet",imageId="http://www.roblox.com/asset/?id=4452306965",rarity="epic",kind="helmet"},
+{name="Hellstone Greataxe",imageId="http://www.roblox.com/asset/?id=5250374427",rarity="epic",kind="weapon"},
+{name="Hextech Greataxe",imageId="http://www.roblox.com/asset/?id=4110961421",rarity="epic",kind="weapon"},
+{name="Hextech Katana",imageId="http://www.roblox.com/asset/?id=4110959386",rarity="epic",kind="weapon"},
+{name="Hextech Overloaded Staff",imageId="http://www.roblox.com/asset/?id=4284692349",rarity="legendary",kind="weapon"},
+{name="Hextech Polearm",imageId="http://www.roblox.com/asset/?id=4110990990",rarity="epic",kind="weapon"},
+{name="Hextech Wired Spellblade",imageId="http://www.roblox.com/asset/?id=4110991759",rarity="epic",kind="weapon"},
+{name="High Priest Battleaxe",imageId="rbxassetid://3038588526",rarity="epic",kind="weapon"},
+{name="Hofund (bonus boss)",imageId="rbxassetid://9821875398",rarity="ultimate",kind="weapon"},
+{name="Holy Barrier",imageId="rbxassetid://2610744829",rarity="rare",kind="ability"},
+{name="Holy Circle",imageId="rbxassetid://2520304152",rarity="epic",kind="ability"},
+{name="Holy Grail",imageId="rbxassetid://2919770930",rarity="epic",kind="weapon"},
+{name="Holy Staff",imageId="rbxassetid://2718139085",rarity="epic",kind="weapon"},
+{name="Holy Wand",imageId="rbxassetid://2968942078",rarity="epic",kind="weapon"},
+{name="Honorable Greatsword",imageId="rbxassetid://3275246199",rarity="epic",kind="weapon"},
+{name="Hope's Triumph",imageId="rbxassetid://3115076547",rarity="epic",kind="weapon"},
+{name="Hunter's Guardian Armor",imageId="http://www.roblox.com/asset/?id=3734369298",rarity="epic",kind="chest"},
+{name="Hunter's Guardian Helmet",imageId="http://www.roblox.com/asset/?id=3734415265",rarity="epic",kind="helmet"},
+{name="Hunter's Mage Armor",imageId="http://www.roblox.com/asset/?id=3734322879",rarity="epic",kind="chest"},
+{name="Hunter's Mage Helmet",imageId="http://www.roblox.com/asset/?id=3734414935",rarity="epic",kind="helmet"},
+{name="Hunter's Warrior Armor",imageId="http://www.roblox.com/asset/?id=3734322551",rarity="epic",kind="chest"},
+{name="Hunter's Warrior Helmet",imageId="http://www.roblox.com/asset/?id=3734414710",rarity="epic",kind="helmet"},
+{name="Ice Barrage",imageId="http://www.roblox.com/asset/?id=6207983645",rarity="epic",kind="ability"},
+{name="Ice Crash",imageId="http://www.roblox.com/asset/?id=6207983948",rarity="epic",kind="ability"},
+{name="Ice Enhanced Sword",imageId="rbxassetid://2908343010",rarity="epic",kind="weapon"},
+{name="Ice Greatspear",imageId="rbxassetid://8349309516",rarity="epic",kind="weapon"},
+{name="Ice Guardian Armor",imageId="rbxassetid://2911727123",rarity="epic",kind="chest"},
+{name="Ice Guardian Helmet",imageId="rbxassetid://2911730869",rarity="epic",kind="helmet"},
+{name="Ice Infused Slicer",imageId="rbxassetid://2908345874",rarity="epic",kind="weapon"},
+{name="Ice King's Guardian Armor",imageId="rbxassetid://2911729288",rarity="epic",kind="chest"},
+{name="Ice King's Guardian Helmet",imageId="rbxassetid://2911733122",rarity="epic",kind="helmet"},
+{name="Ice King's Mage Hood",imageId="rbxassetid://2911729495",rarity="epic",kind="helmet"},
+{name="Ice King's Mage Robes",imageId="rbxassetid://2911729892",rarity="epic",kind="chest"},
+{name="Ice King's Warrior Armor",imageId="rbxassetid://2911729020",rarity="epic",kind="chest"},
+{name="Ice King's Warrior Helmet",imageId="rbxassetid://2911732722",rarity="epic",kind="helmet"},
+{name="Ice Mage Hood",imageId="rbxassetid://2911731170",rarity="epic",kind="helmet"},
+{name="Ice Mage Robes",imageId="rbxassetid://2911727556",rarity="epic",kind="chest"},
+{name="Ice Needles",imageId="rbxassetid://2923911770",rarity="uncommon",kind="ability"},
+{name="Ice Nova",imageId="rbxassetid://3115157056",rarity="rare",kind="ability"},
+{name="Ice Queen's Wand",imageId="rbxassetid://2919774496",rarity="epic",kind="weapon"},
+{name="Ice Reaver",imageId="rbxassetid://2514431445",rarity="epic",kind="weapon"},
+{name="Ice Spellblade",imageId="rbxassetid://8349310227",rarity="epic",kind="weapon"},
+{name="Ice Spikes",imageId="http://www.roblox.com/asset/?id=6207984085",rarity="epic",kind="ability"},
+{name="Ice Totem",imageId="rbxassetid://3115157403",rarity="epic",kind="ability"},
+{name="Ice Warrior Armor",imageId="rbxassetid://2911726485",rarity="epic",kind="chest"},
+{name="Ice Warrior Helmet",imageId="rbxassetid://2911730485",rarity="epic",kind="helmet"},
+{name="Icicle Barrage",imageId="rbxassetid://3484488104",rarity="rare",kind="ability"},
+{name="Illusion Blast",imageId="rbxassetid://3276265175",rarity="epic",kind="ability"},
+{name="Industrial Guardian Armor",imageId="http://www.roblox.com/asset/?id=4111003175",rarity="epic",kind="chest"},
+{name="Industrial Guardian Helmet",imageId="http://www.roblox.com/asset/?id=4111013029",rarity="epic",kind="helmet"},
+{name="Industrial Mage Armor",imageId="http://www.roblox.com/asset/?id=4111000791",rarity="epic",kind="chest"},
+{name="Industrial Mage Helmet",imageId="http://www.roblox.com/asset/?id=4111012588",rarity="epic",kind="helmet"},
+{name="Industrial Spellscythe",imageId="rbxassetid://3275250093",rarity="epic",kind="weapon"},
+{name="Industrial Warrior Armor",imageId="http://www.roblox.com/asset/?id=4111000479",rarity="epic",kind="chest"},
+{name="Industrial Warrior Helmet",imageId="http://www.roblox.com/asset/?id=4111012204",rarity="epic",kind="helmet"},
+{name="Infernal Blast",imageId="http://www.roblox.com/asset/?id=4452299619",rarity="epic",kind="ability"},
+{name="Infernal Elemental Sword",imageId="rbxassetid://2511721913",rarity="epic",kind="weapon"},
+{name="Infernal Guardian Armor",imageId="rbxassetid://3275328550",rarity="epic",kind="chest"},
+{name="Infernal Guardian Helmet",imageId="rbxassetid://3275331251",rarity="epic",kind="helmet"},
+{name="Infernal Mage Armor",imageId="rbxassetid://3275328835",rarity="epic",kind="chest"},
+{name="Infernal Mage Hood",imageId="rbxassetid://3275331443",rarity="epic",kind="helmet"},
+{name="Infernal Orbs",imageId="rbxassetid://3115156166",rarity="uncommon",kind="ability"},
+{name="Infernal Strike",imageId="rbxassetid://3115156596",rarity="epic",kind="ability"},
+{name="Infernal Sun Staff",imageId="rbxassetid://3038585086",rarity="epic",kind="weapon"},
+{name="Infernal Warrior Armor",imageId="rbxassetid://3275328124",rarity="epic",kind="chest"},
+{name="Infernal Warrior Helmet",imageId="rbxassetid://3275330997",rarity="epic",kind="helmet"},
+{name="Inferno Plate Armor",imageId="rbxassetid://2986403083",rarity="epic",kind="chest"},
+{name="Inferno Plate Helmet",imageId="rbxassetid://2986399235",rarity="epic",kind="helmet"},
+{name="Inner Focus",imageId="http://www.roblox.com/asset/?id=5251638369",rarity="epic",kind="ability"},
+{name="Inner Rage",imageId="http://www.roblox.com/asset/?id=5251638613",rarity="epic",kind="ability"},
+{name="Innervate",imageId="rbxassetid://2621336370",rarity="epic",kind="ability"},
+{name="Inventor's Greatsword",imageId="http://www.roblox.com/asset/?id=4110989084",rarity="legendary",kind="weapon"},
+{name="Inventor's Guardian Armor",imageId="http://www.roblox.com/asset/?id=4284623555",rarity="epic",kind="chest"},
+{name="Inventor's Guardian Helmet",imageId="http://www.roblox.com/asset/?id=4284621832",rarity="epic",kind="helmet"},
+{name="Inventor's Mage Armor",imageId="http://www.roblox.com/asset/?id=4284624125",rarity="epic",kind="chest"},
+{name="Inventor's Mage Helmet",imageId="http://www.roblox.com/asset/?id=4284622497",rarity="epic",kind="helmet"},
+{name="Inventor's Spellblade",imageId="http://www.roblox.com/asset/?id=4110999126",rarity="legendary",kind="weapon"},
+{name="Inventor's Warrior Armor",imageId="http://www.roblox.com/asset/?id=4284625160",rarity="epic",kind="chest"},
+{name="Inventor's Warrior Helmet",imageId="http://www.roblox.com/asset/?id=4284623101",rarity="epic",kind="helmet"},
+{name="Iron Armor",imageId="rbxassetid://2703235305",rarity="epic",kind="chest"},
+{name="Iron Helmet",imageId="rbxassetid://2703265268",rarity="epic",kind="helmet"},
+{name="Iron Longsword",imageId="rbxassetid://2521657793",rarity="epic",kind="weapon"},
+{name="Jade Rain",imageId="rbxassetid://11623492208",rarity="epic",kind="ability"},
+{name="Jade Roller",imageId="rbxassetid://11623492525",rarity="epic",kind="ability"},
+{name="Jade Spelldagger",imageId="rbxassetid://3275251760",rarity="epic",kind="weapon"},
+{name="Jotunn Guardian Armor",imageId="rbxassetid://8349311592",rarity="epic",kind="chest"},
+{name="Jotunn Guardian Helmet",imageId="rbxassetid://8349312784",rarity="epic",kind="helmet"},
+{name="Jotunn Mage Armor",imageId="rbxassetid://8349311436",rarity="epic",kind="chest"},
+{name="Jotunn Mage Helmet",imageId="rbxassetid://8349312703",rarity="epic",kind="helmet"},
+{name="Jotunn Warrior Armor",imageId="rbxassetid://8349311318",rarity="epic",kind="chest"},
+{name="Jotunn Warrior Helmet",imageId="rbxassetid://8349312615",rarity="epic",kind="helmet"},
+{name="King's Greatsword",imageId="rbxassetid://2820210213",rarity="epic",kind="weapon"},
+{name="King's Spellblade",imageId="rbxassetid://2820210011",rarity="epic",kind="weapon"},
+{name="Kraken Slayer",imageId="http://www.roblox.com/asset/?id=3732508543",rarity="legendary",kind="weapon"},
+{name="Laevateinn (bonus boss)",imageId="rbxassetid://9821873895",rarity="ultimate",kind="weapon"},
+{name="Lava Barrage",imageId="http://www.roblox.com/asset/?id=5251638063",rarity="epic",kind="ability"},
+{name="Lava Beam Orb",imageId="http://www.roblox.com/asset/?id=5251637778",rarity="epic",kind="ability"},
+{name="Lava Cage",imageId="http://www.roblox.com/asset/?id=5251636715",rarity="epic",kind="ability"},
+{name="Lava King's Guardian Armor",imageId="http://www.roblox.com/asset/?id=5250431666",rarity="epic",kind="chest"},
+{name="Lava King's Guardian Helmet",imageId="http://www.roblox.com/asset/?id=5250428923",rarity="epic",kind="helmet"},
+{name="Lava King's Mage Armor",imageId="http://www.roblox.com/asset/?id=5250431969",rarity="epic",kind="chest"},
+{name="Lava King's Mage Helmet",imageId="http://www.roblox.com/asset/?id=5250429234",rarity="epic",kind="helmet"},
+{name="Lava King's Spell Daggers",imageId="http://www.roblox.com/asset/?id=5250370565",rarity="legendary",kind="weapon"},
+{name="Lava King's Warrior Armor",imageId="http://www.roblox.com/asset/?id=5250432232",rarity="epic",kind="chest"},
+{name="Lava King's Warrior Helmet",imageId="http://www.roblox.com/asset/?id=5250429535",rarity="epic",kind="helmet"},
+{name="Lava King's Warscythe",imageId="http://www.roblox.com/asset/?id=5250372766",rarity="legendary",kind="weapon"},
+{name="Lava Lash",imageId="rbxassetid://3276265493",rarity="epic",kind="ability"},
+{name="Lava Shard Staff",imageId="http://www.roblox.com/asset/?id=5250372411",rarity="epic",kind="weapon"},
+{name="Lava Spellblade",imageId="http://www.roblox.com/asset/?id=5250371802",rarity="epic",kind="weapon"},
+{name="Lava Tendril Pike",imageId="http://www.roblox.com/asset/?id=5250372091",rarity="epic",kind="weapon"},
+{name="Life Dash",imageId="http://www.roblox.com/asset/?id=4111026739",rarity="rare",kind="ability"},
+{name="Life Pulse",imageId="rbxassetid://3484490246",rarity="rare",kind="ability"},
+{name="Lightning Beam",imageId="rbxassetid://2923912159",rarity="uncommon",kind="ability"},
+{name="Lightning Burst",imageId="rbxassetid://6874804760",rarity="epic",kind="ability"},
+{name="Lightning Strikes",imageId="rbxassetid://2610930929",rarity="rare",kind="ability"},
+{name="Luminous Greatstaff",imageId="rbxassetid://3115076302",rarity="epic",kind="weapon"},
+{name="Mage Plate Armor",imageId="rbxassetid://2911803754",rarity="epic",kind="chest"},
+{name="Mage Plate Helmet",imageId="rbxassetid://2911804004",rarity="epic",kind="helmet"},
+{name="Mage's Spellbook",imageId="rbxassetid://2515160303",rarity="epic",kind="weapon"},
+{name="Magic Mallet",imageId="rbxassetid://2718086298",rarity="epic",kind="weapon"},
+{name="Magic Trident",imageId="http://www.roblox.com/asset/?id=3733462850",rarity="epic",kind="weapon"},
+{name="Magma Infused Staff",imageId="rbxassetid://2512695592",rarity="epic",kind="weapon"},
+{name="Magma Infused Waraxe",imageId="http://www.roblox.com/asset/?id=5250374077",rarity="epic",kind="weapon"},
+{name="Mana Infused Spellblade",imageId="rbxassetid://3434836184",rarity="epic",kind="weapon"},
+{name="Mercenary Armor",imageId="rbxassetid://2703235526",rarity="epic",kind="chest"},
+{name="Mercenary Helmet",imageId="rbxassetid://2703265681",rarity="epic",kind="helmet"},
+{name="Midgardian Guardian Armor",imageId="rbxassetid://8349311218",rarity="epic",kind="chest"},
+{name="Midgardian Guardian Helmet",imageId="rbxassetid://8349312484",rarity="epic",kind="helmet"},
+{name="Midgardian Mage Armor",imageId="rbxassetid://8349311112",rarity="epic",kind="chest"},
+{name="Midgardian Mage Helmet",imageId="rbxassetid://8349312318",rarity="epic",kind="helmet"},
+{name="Midgardian Warrior Armor",imageId="rbxassetid://8349310950",rarity="epic",kind="chest"},
+{name="Midgardian Warrior Helmet",imageId="rbxassetid://8349312205",rarity="epic",kind="helmet"},
+{name="Mighty Flatblade",imageId="rbxassetid://2968933927",rarity="epic",kind="weapon"},
+{name="Mighty Frozen Greatsword",imageId="rbxassetid://2908345489",rarity="epic",kind="weapon"},
+{name="Mighty Fusion Maul",imageId="http://www.roblox.com/asset/?id=4110988717",rarity="epic",kind="weapon"},
+{name="Mighty Fusion Spellblade",imageId="http://www.roblox.com/asset/?id=4110998780",rarity="epic",kind="weapon"},
+{name="Mighty Leap",imageId="http://www.roblox.com/asset/?id=3734464505",rarity="rare",kind="ability"},
+{name="Mjolnir",imageId="rbxassetid://8352073741",rarity="legendary",kind="weapon"},
+{name="Molten Ball",imageId="http://www.roblox.com/asset/?id=4510338078",rarity="epic",kind="ability"},
+{name="Molten Blade",imageId="rbxassetid://2968934150",rarity="epic",kind="weapon"},
+{name="Molten Forged Guardian Armor",imageId="http://www.roblox.com/asset/?id=5250432530",rarity="epic",kind="chest"},
+{name="Molten Forged Guardian Helmet",imageId="http://www.roblox.com/asset/?id=5250429874",rarity="epic",kind="helmet"},
+{name="Molten Forged Mage Armor",imageId="http://www.roblox.com/asset/?id=5250432778",rarity="epic",kind="chest"},
+{name="Molten Forged Mage Helmet",imageId="http://www.roblox.com/asset/?id=5250430160",rarity="epic",kind="helmet"},
+{name="Molten Forged Warrior Armor",imageId="http://www.roblox.com/asset/?id=5250433087",rarity="epic",kind="chest"},
+{name="Molten Forged Warrior Helmet",imageId="http://www.roblox.com/asset/?id=5250430475",rarity="epic",kind="helmet"},
+{name="Molten Greataxe",imageId="rbxassetid://2968941341",rarity="epic",kind="weapon"},
+{name="Molten Maul",imageId="rbxassetid://2718090775",rarity="epic",kind="weapon"},
+{name="Molten Shards",imageId="http://www.roblox.com/asset/?id=5251637482",rarity="epic",kind="ability"},
+{name="Moon Crystal Spell Blade",imageId="http://www.roblox.com/asset/?id=4626315652",rarity="epic",kind="weapon"},
+{name="Moonlight Staff",imageId="rbxassetid://3038585652",rarity="epic",kind="weapon"},
+{name="Mossy Greatsword",imageId="rbxassetid://2908343808",rarity="epic",kind="weapon"},
+{name="Mystery Matter",imageId="http://www.roblox.com/asset/?id=4626316551",rarity="epic",kind="ability"},
+{name="Mythical Guardian Armor",imageId="http://www.roblox.com/asset/?id=3734370413",rarity="epic",kind="chest"},
+{name="Mythical Guardian Helmet",imageId="http://www.roblox.com/asset/?id=3734425730",rarity="epic",kind="helmet"},
+{name="Mythical Mage Armor",imageId="http://www.roblox.com/asset/?id=3734370173",rarity="epic",kind="chest"},
+{name="Mythical Mage Helmet",imageId="http://www.roblox.com/asset/?id=3734425496",rarity="epic",kind="helmet"},
+{name="Mythical Warrior Armor",imageId="http://www.roblox.com/asset/?id=3734369793",rarity="epic",kind="chest"},
+{name="Mythical Warrior Helmet",imageId="http://www.roblox.com/asset/?id=3734425200",rarity="epic",kind="helmet"},
+{name="Nature Guardian Armor",imageId="http://www.roblox.com/asset/?id=4510338853",rarity="epic",kind="chest"},
+{name="Nature Guardian Helmet",imageId="http://www.roblox.com/asset/?id=4510339259",rarity="epic",kind="helmet"},
+{name="Nature Mage Armor",imageId="http://www.roblox.com/asset/?id=4510338578",rarity="epic",kind="chest"},
+{name="Nature Mage Helmet",imageId="http://www.roblox.com/asset/?id=4510339003",rarity="epic",kind="helmet"},
+{name="Nature Scythe",imageId="rbxassetid://3115075464",rarity="epic",kind="weapon"},
+{name="Nature Spellblade",imageId="http://www.roblox.com/asset/?id=4452305951",rarity="epic",kind="weapon"},
+{name="Nature Warrior Armor",imageId="http://www.roblox.com/asset/?id=4510338726",rarity="epic",kind="chest"},
+{name="Nature Warrior Helmet",imageId="http://www.roblox.com/asset/?id=4510339139",rarity="epic",kind="helmet"},
+{name="Norse Blade",imageId="rbxassetid://8349309115",rarity="epic",kind="weapon"},
+{name="Norse Greataxe",imageId="rbxassetid://8349309617",rarity="epic",kind="weapon"},
+{name="Northern Runic Blade",imageId="rbxassetid://8349309275",rarity="epic",kind="weapon"},
+{name="Northern Spellstaff",imageId="rbxassetid://8349310058",rarity="epic",kind="weapon"},
+{name="Novice Armor",imageId="rbxassetid://2703234723",rarity="epic",kind="chest"},
+{name="Novice Helmet",imageId="rbxassetid://2703264822",rarity="epic",kind="helmet"},
+{name="Novice Wand",imageId="rbxassetid://2611305024",rarity="epic",kind="weapon"},
+{name="Oathsworn Guardian Armor",imageId="http://www.roblox.com/asset/?id=11558826017",rarity="epic",kind="chest"},
+{name="Oathsworn Guardian Helmet",imageId="http://www.roblox.com/asset/?id=11558827865",rarity="epic",kind="helmet"},
+{name="Oathsworn Halberd",imageId="rbxassetid://11558829719",rarity="epic",kind="weapon"},
+{name="Oathsworn Hammer",imageId="rbxassetid://11558822012",rarity="epic",kind="weapon"},
+{name="Oathsworn Mage Armor",imageId="http://www.roblox.com/asset/?id=11558824892",rarity="epic",kind="chest"},
+{name="Oathsworn Mage Helmet",imageId="http://www.roblox.com/asset/?id=11558827428",rarity="epic",kind="helmet"},
+{name="Oathsworn Spellblade",imageId="rbxassetid://11558822984",rarity="epic",kind="weapon"},
+{name="Oathsworn Spellscythe",imageId="rbxassetid://11558823672",rarity="epic",kind="weapon"},
+{name="Oathsworn Staff And Tome",imageId="rbxassetid://11558823855",rarity="epic",kind="weapon"},
+{name="Oathsworn Sword And Shield",imageId="rbxassetid://11558822269",rarity="epic",kind="weapon"},
+{name="Oathsworn Warrior Armor",imageId="http://www.roblox.com/asset/?id=11558825021",rarity="epic",kind="chest"},
+{name="Oathsworn Warrior Helmet",imageId="http://www.roblox.com/asset/?id=11558827623",rarity="epic",kind="helmet"},
+{name="Ocean Dweller's Mageblade",imageId="http://www.roblox.com/asset/?id=3733464020",rarity="epic",kind="weapon"},
+{name="Ocean Pearl Staff",imageId="http://www.roblox.com/asset/?id=6187578376",rarity="epic",kind="weapon"},
+{name="Ocean Splitter",imageId="rbxassetid://2968935449",rarity="epic",kind="weapon"},
+{name="Oceanic Greatsword",imageId="http://www.roblox.com/asset/?id=6187577884",rarity="epic",kind="weapon"},
+{name="Onyx Empowered Greatsword",imageId="rbxassetid://2968935761",rarity="epic",kind="weapon"},
+{name="Onyx Hammer",imageId="rbxassetid://2718090040",rarity="epic",kind="weapon"},
+{name="Onyx Spell Scythe",imageId="rbxassetid://2919773590",rarity="epic",kind="weapon"},
+{name="Onyx Staff",imageId="rbxassetid://2718087053",rarity="epic",kind="weapon"},
+{name="Orb Of Destruction",imageId="http://www.roblox.com/asset/?id=4284635863",rarity="epic",kind="ability"},
+{name="Overcharge",imageId="http://www.roblox.com/asset/?id=4111034252",rarity="rare",kind="ability"},
+{name="Overgrown War Scythe",imageId="rbxassetid://6871201358",rarity="epic",kind="weapon"},
+{name="Overlord's Guardian Armor",imageId="rbxassetid://3484510981",rarity="epic",kind="chest"},
+{name="Overlord's Guardian Hat",imageId="rbxassetid://3484534540",rarity="epic",kind="helmet"},
+{name="Overlord's Mage Hat",imageId="rbxassetid://3484534350",rarity="epic",kind="helmet"},
+{name="Overlord's Mage Robes",imageId="rbxassetid://3484510730",rarity="epic",kind="chest"},
+{name="Overlord's Manablade",imageId="rbxassetid://3434836386",rarity="legendary",kind="weapon"},
+{name="Overlord's Rageblade",imageId="rbxassetid://3434834348",rarity="legendary",kind="weapon"},
+{name="Overlord's Warrior Armor",imageId="rbxassetid://3484510512",rarity="epic",kind="chest"},
+{name="Overlord's Warrior Hat",imageId="rbxassetid://3484534138",rarity="epic",kind="helmet"},
+{name="Phantom Blades",imageId="http://www.roblox.com/asset/?id=3734464926",rarity="epic",kind="ability"},
+{name="Phantom Flames",imageId="http://www.roblox.com/asset/?id=4318579122",rarity="epic",kind="ability"},
+{name="Phantom Striker",imageId="http://www.roblox.com/asset/?id=3734463449",rarity="epic",kind="ability"},
+{name="Phoenix Greatstaff",imageId="rbxassetid://3115077967",rarity="legendary",kind="weapon"},
+{name="Piercing Rain",imageId="rbxassetid://2923912884",rarity="uncommon",kind="ability"},
+{name="Piercing Roots",imageId="rbxassetid://6874804342",rarity="rare",kind="ability"},
+{name="Pink Pearl Spellscythe",imageId="rbxassetid://3275252344",rarity="epic",kind="weapon"},
+{name="Pirate King's Guardian Armor",imageId="rbxassetid://2986403421",rarity="epic",kind="chest"},
+{name="Pirate King's Guardian Helmet",imageId="rbxassetid://2986399790",rarity="epic",kind="helmet"},
+{name="Pirate King's Mage Halo",imageId="rbxassetid://2986401342",rarity="epic",kind="helmet"},
+{name="Pirate King's Mage Robes",imageId="rbxassetid://2986403693",rarity="epic",kind="chest"},
+{name="Pirate King's Warrior Armor",imageId="rbxassetid://2986403990",rarity="epic",kind="chest"},
+{name="Pirate King's Warrior Helmet",imageId="rbxassetid://2986400161",rarity="epic",kind="helmet"},
+{name="Plasma Infused Cutlass",imageId="http://www.roblox.com/asset/?id=4110998436",rarity="epic",kind="weapon"},
+{name="Plasma Spellblade",imageId="http://www.roblox.com/asset/?id=4110989670",rarity="epic",kind="weapon"},
+{name="Plasma Twin Spellblade",imageId="http://www.roblox.com/asset/?id=4110991382",rarity="epic",kind="weapon"},
+{name="Poison Cloud",imageId="rbxassetid://2621358544",rarity="rare",kind="ability"},
+{name="Poison Spear",imageId="http://www.roblox.com/asset/?id=3732509392",rarity="epic",kind="weapon"},
+{name="Pulse Beam",imageId="http://www.roblox.com/asset/?id=3734488053",rarity="rare",kind="ability"},
+{name="Pulse Waves",imageId="http://www.roblox.com/asset/?id=4111027068",rarity="rare",kind="ability"},
+{name="Pulsefire",imageId="rbxassetid://2985730646",rarity="rare",kind="ability"},
+{name="Pulverizer",imageId="rbxassetid://2718088003",rarity="epic",kind="weapon"},
+{name="Raider's Guardian Armor",imageId="http://www.roblox.com/asset/?id=3734322100",rarity="epic",kind="chest"},
+{name="Raider's Guardian Helmet",imageId="http://www.roblox.com/asset/?id=3734414281",rarity="epic",kind="helmet"},
+{name="Raider's Mage Armor",imageId="http://www.roblox.com/asset/?id=3734321350",rarity="epic",kind="chest"},
+{name="Raider's Mage Helmet",imageId="http://www.roblox.com/asset/?id=3734413949",rarity="epic",kind="helmet"},
+{name="Raider's Warrior Armor",imageId="http://www.roblox.com/asset/?id=3734321055",rarity="epic",kind="chest"},
+{name="Raider's Warrior Helmet",imageId="http://www.roblox.com/asset/?id=3734370929",rarity="epic",kind="helmet"},
+{name="Red Knight Armor",imageId="rbxassetid://2703236152",rarity="epic",kind="chest"},
+{name="Red Knight Helmet",imageId="rbxassetid://2703266133",rarity="epic",kind="helmet"},
+{name="Redemption",imageId="rbxassetid://2520313327",rarity="uncommon",kind="ability"},
+{name="Reinforced Guardian Armor",imageId="rbxassetid://3114572345",rarity="epic",kind="chest"},
+{name="Reinforced Guardian Helmet",imageId="rbxassetid://3114572461",rarity="epic",kind="helmet"},
+{name="Reinforced Ice Blade",imageId="rbxassetid://2908344750",rarity="epic",kind="weapon"},
+{name="Reinforced Steel Sword",imageId="rbxassetid://2908343273",rarity="epic",kind="weapon"},
+{name="Rejuvenating Spray",imageId="rbxassetid://2923911030",rarity="uncommon",kind="ability"},
+{name="Rending Slice",imageId="rbxassetid://3115155894",rarity="rare",kind="ability"},
+{name="Revitalize",imageId="rbxassetid://6874805273",rarity="epic",kind="ability"},
+{name="Riptide Guardian Armor",imageId="http://www.roblox.com/asset/?id=6187579049",rarity="epic",kind="chest"},
+{name="Riptide Guardian Helmet",imageId="http://www.roblox.com/asset/?id=6187497907",rarity="epic",kind="helmet"},
+{name="Riptide Mage Armor",imageId="http://www.roblox.com/asset/?id=6187578982",rarity="epic",kind="chest"},
+{name="Riptide Mage Helmet",imageId="http://www.roblox.com/asset/?id=6187498069",rarity="epic",kind="helmet"},
+{name="Riptide Warrior Armor",imageId="http://www.roblox.com/asset/?id=6187578883",rarity="epic",kind="chest"},
+{name="Riptide Warrior Helmet",imageId="http://www.roblox.com/asset/?id=6187498386",rarity="epic",kind="helmet"},
+{name="Rogue Guardian Armor",imageId="rbxassetid://3484510156",rarity="epic",kind="chest"},
+{name="Rogue Guardian Hood",imageId="rbxassetid://3484524514",rarity="epic",kind="helmet"},
+{name="Rogue Mage Hood",imageId="rbxassetid://3484524273",rarity="epic",kind="helmet"},
+{name="Rogue Mage Robes",imageId="rbxassetid://3484499810",rarity="epic",kind="chest"},
+{name="Rogue Warrior Armor",imageId="rbxassetid://3484499540",rarity="epic",kind="chest"},
+{name="Rogue Warrior Hood",imageId="rbxassetid://3484524027",rarity="epic",kind="helmet"},
+{name="Rogue's Rapier",imageId="rbxassetid://2521658340",rarity="epic",kind="weapon"},
+{name="Royal Crimson Greatsword",imageId="rbxassetid://3115074580",rarity="epic",kind="weapon"},
+{name="Royal Katana",imageId="rbxassetid://3275245888",rarity="epic",kind="weapon"},
+{name="Royal Slicer",imageId="rbxassetid://2908345247",rarity="epic",kind="weapon"},
+{name="Ruby Greatsword",imageId="rbxassetid://3275248540",rarity="epic",kind="weapon"},
+{name="Ruby Staff",imageId="rbxassetid://2968941889",rarity="epic",kind="weapon"},
+{name="Runic Hammer",imageId="rbxassetid://2718090359",rarity="epic",kind="weapon"},
+{name="Runic Mace",imageId="rbxassetid://8349310505",rarity="epic",kind="weapon"},
+{name="Runic Pike",imageId="rbxassetid://3434834825",rarity="epic",kind="weapon"},
+{name="Runic Spellscythe",imageId="rbxassetid://3434836013",rarity="epic",kind="weapon"},
+{name="Runic Strike",imageId="rbxassetid://3484481774",rarity="uncommon",kind="ability"},
+{name="Sakura Greatstaff",imageId="rbxassetid://3275252865",rarity="legendary",kind="weapon"},
+{name="Sakura Katana",imageId="rbxassetid://3275248918",rarity="legendary",kind="weapon"},
+{name="Salvaged Guardian Armor",imageId="rbxassetid://3484499067",rarity="epic",kind="chest"},
+{name="Salvaged Guardian Helmet",imageId="rbxassetid://3484523568",rarity="epic",kind="helmet"},
+{name="Salvaged Mage Hat",imageId="rbxassetid://3484523318",rarity="epic",kind="helmet"},
+{name="Salvaged Mage Robes",imageId="rbxassetid://3484498744",rarity="epic",kind="chest"},
+{name="Salvaged Warrior Armor",imageId="rbxassetid://3484498440",rarity="epic",kind="chest"},
+{name="Salvaged Warrior Helmet",imageId="rbxassetid://3484511291",rarity="epic",kind="helmet"},
+{name="Samurai Guardian Armor",imageId="rbxassetid://3275327540",rarity="epic",kind="chest"},
+{name="Samurai Guardian Helmet",imageId="rbxassetid://3275330301",rarity="epic",kind="helmet"},
+{name="Samurai Mage Helmet",imageId="rbxassetid://3275330570",rarity="epic",kind="helmet"},
+{name="Samurai Mage Robes",imageId="rbxassetid://3275327794",rarity="epic",kind="chest"},
+{name="Samurai Warrior Armor",imageId="rbxassetid://3275326675",rarity="epic",kind="chest"},
+{name="Samurai Warrior Hairband",imageId="rbxassetid://3275330093",rarity="epic",kind="helmet"},
+{name="Sapphire Greatstaff",imageId="rbxassetid://3115076106",rarity="epic",kind="weapon"},
+{name="Sapphire Spell Dagger",imageId="rbxassetid://2521613764",rarity="epic",kind="weapon"},
+{name="Sapphire Spellspear",imageId="rbxassetid://3275250377",rarity="epic",kind="weapon"},
+{name="Sapphire Stone Wand",imageId="rbxassetid://3434834612",rarity="epic",kind="weapon"},
+{name="Sea King's Greatstaff",imageId="http://www.roblox.com/asset/?id=6187578571",rarity="legendary",kind="weapon"},
+{name="Sea King's Trident",imageId="http://www.roblox.com/asset/?id=6187577966",rarity="legendary",kind="weapon"},
+{name="Sea Serpent's Wings",imageId="http://www.roblox.com/asset/?id=3733504526",rarity="legendary",kind="weapon"},
+{name="Sea Staff",imageId="http://www.roblox.com/asset/?id=6187578017",rarity="epic",kind="weapon"},
+{name="Seafarer's Lost Blade",imageId="http://www.roblox.com/asset/?id=3732507231",rarity="epic",kind="weapon"},
+{name="Seafarer's Magic Device",imageId="http://www.roblox.com/asset/?id=3733504016",rarity="epic",kind="weapon"},
+{name="Searing Beam",imageId="rbxassetid://2923913298",rarity="uncommon",kind="ability"},
+{name="Serpent Pike",imageId="http://www.roblox.com/asset/?id=6187577702",rarity="epic",kind="weapon"},
+{name="Serpent Scimitars",imageId="http://www.roblox.com/asset/?id=6187577481",rarity="epic",kind="weapon"},
+{name="Sharktooth Blade",imageId="http://www.roblox.com/asset/?id=3732366631",rarity="epic",kind="weapon"},
+{name="Shattered Magma Blade",imageId="http://www.roblox.com/asset/?id=5250373343",rarity="epic",kind="weapon"},
+{name="Smite",imageId="http://www.roblox.com/asset/?id=3734463726",rarity="rare",kind="ability"},
+{name="Snow Elemental Staff",imageId="rbxassetid://2514431372",rarity="epic",kind="weapon"},
+{name="Snowy Greatstaff",imageId="rbxassetid://2919771304",rarity="epic",kind="weapon"},
+{name="Solar Beam",imageId="rbxassetid://11623520034",rarity="epic",kind="ability"},
+{name="Solar Essence Staff",imageId="http://www.roblox.com/asset/?id=4626315815",rarity="epic",kind="weapon"},
+{name="Solar Greatsword",imageId="http://www.roblox.com/asset/?id=4626316425",rarity="epic",kind="weapon"},
+{name="Solar Katana",imageId="http://www.roblox.com/asset/?id=4626316167",rarity="epic",kind="weapon"},
+{name="Solar Staff",imageId="rbxassetid://2968942998",rarity="epic",kind="weapon"},
+{name="Soul Drain",imageId="rbxassetid://8349313894",rarity="epic",kind="ability"},
+{name="Soulstealer Greatsword",imageId="rbxassetid://2968941706",rarity="legendary",kind="weapon"},
+{name="Space Guardian Armor",imageId="http://www.roblox.com/asset/?id=4626313414",rarity="epic",kind="chest"},
+{name="Space Guardian Helmet",imageId="http://www.roblox.com/asset/?id=4626314410",rarity="epic",kind="helmet"},
+{name="Space Mage Armor",imageId="http://www.roblox.com/asset/?id=4626313283",rarity="epic",kind="chest"},
+{name="Space Mage Helmet",imageId="http://www.roblox.com/asset/?id=4626314340",rarity="epic",kind="helmet"},
+{name="Space Warrior Armor",imageId="http://www.roblox.com/asset/?id=4626313166",rarity="epic",kind="chest"},
+{name="Space Warrior Helmet",imageId="http://www.roblox.com/asset/?id=4626314263",rarity="epic",kind="helmet"},
+{name="Spear Strike",imageId="http://www.roblox.com/asset/?id=6207983856",rarity="rare",kind="ability"},
+{name="Spiked Club",imageId="rbxassetid://2521613519",rarity="epic",kind="weapon"},
+{name="Spirit Bomb",imageId="http://www.roblox.com/asset/?id=3734426616",rarity="uncommon",kind="ability"},
+{name="Staff of Heat",imageId="rbxassetid://3275249447",rarity="epic",kind="weapon"},
+{name="Staff of the Gods",imageId="rbxassetid://2968945104",rarity="legendary",kind="weapon"},
+{name="Staff of the North",imageId="rbxassetid://8349310701",rarity="epic",kind="weapon"},
+{name="Star Barrage",imageId="http://www.roblox.com/asset/?id=4111027727",rarity="rare",kind="ability"},
+{name="Starfall",imageId="http://www.roblox.com/asset/?id=4111027423",rarity="rare",kind="ability"},
+{name="Steel Serrated Sword",imageId="rbxassetid://2521657919",rarity="epic",kind="weapon"},
+{name="Steel Strongsword",imageId="rbxassetid://2908342196",rarity="epic",kind="weapon"},
+{name="Stone Scythe",imageId="rbxassetid://3434832514",rarity="epic",kind="weapon"},
+{name="Stone Strongsword",imageId="rbxassetid://2968933601",rarity="epic",kind="weapon"},
+{name="Sunken Blade",imageId="http://www.roblox.com/asset/?id=4284690591",rarity="epic",kind="weapon"},
+{name="Sunlight Staff",imageId="rbxassetid://3038585816",rarity="epic",kind="weapon"},
+{name="Taunting Aura",imageId="rbxassetid://2923909998",rarity="uncommon",kind="ability"},
+{name="Templar Blade",imageId="rbxassetid://2968935228",rarity="epic",kind="weapon"},
+{name="Templar Hood",imageId="rbxassetid://2703266298",rarity="epic",kind="helmet"},
+{name="Templar Robes",imageId="rbxassetid://2703236325",rarity="epic",kind="chest"},
+{name="Thunderous Blast",imageId="rbxassetid://3040146940",rarity="uncommon",kind="ability"},
+{name="Timelost Greatsword",imageId="rbxassetid://3115075055",rarity="epic",kind="weapon"},
+{name="Timelost Guardian Armor",imageId="rbxassetid://3114573358",rarity="epic",kind="chest"},
+{name="Timelost Guardian Helmet",imageId="rbxassetid://3114573493",rarity="epic",kind="helmet"},
+{name="Timelost Mage Armor",imageId="rbxassetid://3114573030",rarity="epic",kind="chest"},
+{name="Timelost Mage Helmet",imageId="rbxassetid://3114573195",rarity="epic",kind="helmet"},
+{name="Timelost Spellbook",imageId="rbxassetid://3115077020",rarity="epic",kind="weapon"},
+{name="Timelost Warhammer",imageId="rbxassetid://3115075296",rarity="epic",kind="weapon"},
+{name="Timelost Warrior Armor",imageId="rbxassetid://3114572655",rarity="epic",kind="chest"},
+{name="Timelost Warrior Helmet",imageId="rbxassetid://3114572805",rarity="epic",kind="helmet"},
+{name="Titan's Greataxe",imageId="rbxassetid://2968936228",rarity="epic",kind="weapon"},
+{name="Titan-forged Guardian Armor",imageId="rbxassetid://3039044487",rarity="epic",kind="chest"},
+{name="Titan-forged Guardian Helmet",imageId="rbxassetid://3039047795",rarity="epic",kind="helmet"},
+{name="Titan-forged Mage Armor",imageId="rbxassetid://3039044301",rarity="epic",kind="chest"},
+{name="Titan-forged Mage Helmet",imageId="rbxassetid://3039047613",rarity="epic",kind="helmet"},
+{name="Titan-forged Warrior Armor",imageId="rbxassetid://3039044081",rarity="epic",kind="chest"},
+{name="Titan-forged Warrior Helmet",imageId="rbxassetid://3039047423",rarity="epic",kind="helmet"},
+{name="Titanium Guardian Armor",imageId="http://www.roblox.com/asset/?id=4111000123",rarity="epic",kind="chest"},
+{name="Titanium Guardian Helmet",imageId="http://www.roblox.com/asset/?id=4111011865",rarity="epic",kind="helmet"},
+{name="Titanium Mage Armor",imageId="http://www.roblox.com/asset/?id=4110999805",rarity="epic",kind="chest"},
+{name="Titanium Mage Helmet",imageId="http://www.roblox.com/asset/?id=4111011491",rarity="epic",kind="helmet"},
+{name="Titanium Warrior Armor",imageId="http://www.roblox.com/asset/?id=4110999507",rarity="epic",kind="chest"},
+{name="Titanium Warrior Helmet",imageId="http://www.roblox.com/asset/?id=4111011137",rarity="epic",kind="helmet"},
+{name="Toxic Spellscythe",imageId="rbxassetid://3434835143",rarity="epic",kind="weapon"},
+{name="Toxic Warspear",imageId="rbxassetid://3275248099",rarity="epic",kind="weapon"},
+{name="Tribal Mage Armor",imageId="rbxassetid://3114572017",rarity="epic",kind="chest"},
+{name="Tribal Mage Hood",imageId="rbxassetid://3114572160",rarity="epic",kind="helmet"},
+{name="Tribal Staff",imageId="rbxassetid://3038584536",rarity="epic",kind="weapon"},
+{name="Tribal Warrior Armor",imageId="http://www.roblox.com/asset/?id=4316781443",rarity="epic",kind="chest"},
+{name="Tribal Warrior Helmet",imageId="rbxassetid://3114571835",rarity="epic",kind="helmet"},
+{name="Triple Blade Throw",imageId="http://www.roblox.com/asset/?id=4111028069",rarity="epic",kind="ability"},
+{name="Triton Guardian Armor",imageId="http://www.roblox.com/asset/?id=6187573499",rarity="epic",kind="chest"},
+{name="Triton Guardian Helmet",imageId="http://www.roblox.com/asset/?id=6187424401",rarity="epic",kind="helmet"},
+{name="Triton Mage Armor",imageId="http://www.roblox.com/asset/?id=6187579195",rarity="epic",kind="chest"},
+{name="Triton Mage Helmet",imageId="http://www.roblox.com/asset/?id=6187424687",rarity="epic",kind="helmet"},
+{name="Triton Warrior Armor",imageId="http://www.roblox.com/asset/?id=6187579128",rarity="epic",kind="chest"},
+{name="Triton Warrior Helmet",imageId="http://www.roblox.com/asset/?id=6187591623",rarity="epic",kind="helmet"},
+{name="Tsunami",imageId="rbxassetid://3484489072",rarity="uncommon",kind="ability"},
+{name="Twin Bladed Slicer",imageId="rbxassetid://2908344135",rarity="epic",kind="weapon"},
+{name="Twin Slash",imageId="http://www.roblox.com/asset/?id=4510338216",rarity="epic",kind="ability"},
+{name="Twisted Wood Greatstaff",imageId="http://www.roblox.com/asset/?id=4510337910",rarity="legendary",kind="weapon"},
+{name="Twisted Wood Greatsword",imageId="http://www.roblox.com/asset/?id=4510337522",rarity="legendary",kind="weapon"},
+{name="Universal Heal",imageId="rbxassetid://2985730059",rarity="epic",kind="ability"},
+{name="Valhalla Guardian Armor",imageId="rbxassetid://8349312125",rarity="epic",kind="chest"},
+{name="Valhalla Guardian Helmet",imageId="rbxassetid://8349313160",rarity="epic",kind="helmet"},
+{name="Valhalla Mage Armor",imageId="rbxassetid://8349311950",rarity="epic",kind="chest"},
+{name="Valhalla Mage Helmet",imageId="rbxassetid://8349312958",rarity="epic",kind="helmet"},
+{name="Valhalla Warrior Armor",imageId="rbxassetid://8352073533",rarity="epic",kind="chest"},
+{name="Valhalla Warrior Helmet",imageId="rbxassetid://8352073326",rarity="epic",kind="helmet"},
+{name="Vampiric Greatstaff",imageId="rbxassetid://3115077382",rarity="epic",kind="weapon"},
+{name="Viking Hatchets",imageId="rbxassetid://8349309362",rarity="epic",kind="weapon"},
+{name="Viking Sceptre",imageId="rbxassetid://8349310334",rarity="epic",kind="weapon"},
+{name="Viking Shield",imageId="rbxassetid://8349310166",rarity="epic",kind="weapon"},
+{name="Violet Spellblade",imageId="rbxassetid://3275251085",rarity="epic",kind="weapon"},
+{name="Void Beam",imageId="rbxassetid://3040155194",rarity="rare",kind="ability"},
+{name="Void Greatsword",imageId="http://www.roblox.com/asset/?id=4626316329",rarity="epic",kind="weapon"},
+{name="Void Plate Armor",imageId="rbxassetid://2986404464",rarity="epic",kind="chest"},
+{name="Void Plate Helmet",imageId="rbxassetid://2986400841",rarity="epic",kind="helmet"},
+{name="Void Spell Blade",imageId="http://www.roblox.com/asset/?id=4626315546",rarity="epic",kind="weapon"},
+{name="Void Spell Dagger",imageId="http://www.roblox.com/asset/?id=4626315453",rarity="epic",kind="weapon"},
+{name="Void Spheres",imageId="http://www.roblox.com/asset/?id=3734426882",rarity="rare",kind="ability"},
+{name="Volcanic Greatsword",imageId="http://www.roblox.com/asset/?id=5250373076",rarity="epic",kind="weapon"},
+{name="Vortex",imageId="rbxassetid://3484489695",rarity="epic",kind="ability"},
+{name="Vortex Grenade",imageId="http://www.roblox.com/asset/?id=4626316715",rarity="epic",kind="ability"},
+{name="War-forged Guardian Armor",imageId="http://www.roblox.com/asset/?id=4111005231",rarity="epic",kind="chest"},
+{name="War-forged Guardian Helmet",imageId="http://www.roblox.com/asset/?id=4111025343",rarity="epic",kind="helmet"},
+{name="War-forged Mage Armor",imageId="http://www.roblox.com/asset/?id=4111004318",rarity="epic",kind="chest"},
+{name="War-forged Mage Helmet",imageId="http://www.roblox.com/asset/?id=4111013795",rarity="epic",kind="helmet"},
+{name="War-forged Warrior Armor",imageId="http://www.roblox.com/asset/?id=4111003861",rarity="epic",kind="chest"},
+{name="War-forged Warrior Helmet",imageId="http://www.roblox.com/asset/?id=4111013455",rarity="epic",kind="helmet"},
+{name="Warlord Plate Armor",imageId="rbxassetid://2911804266",rarity="epic",kind="chest"},
+{name="Warlord Plate Helmet",imageId="rbxassetid://2911804444",rarity="epic",kind="helmet"},
+{name="Water Elemental Spellblade",imageId="rbxassetid://2513252546",rarity="epic",kind="weapon"},
+{name="Water Orb",imageId="http://www.roblox.com/asset/?id=6207984172",rarity="rare",kind="ability"},
+{name="Whirlwind",imageId="rbxassetid://2768520109",rarity="uncommon",kind="ability"},
+{name="Wind Blast",imageId="rbxassetid://6874804146",rarity="epic",kind="ability"},
+},thumbnails={
+["102574845507566"]={url="https://tr.rbxcdn.com/180DAY-d23737b200addd03f4110d468edae5cb/420/420/Image/Png/noFilter",expires=1792709954},
+["103550525606563"]={url="https://tr.rbxcdn.com/180DAY-03159880751f62129c2bcee2c75e58ea/420/420/Image/Png/noFilter",expires=1792709954},
+["114317124"]={url="https://tr.rbxcdn.com/180DAY-8450fd6bbd11ea93a6935e06c838ebc7/420/420/Image/Png/noFilter",expires=1792709954},
+["11558821429"]={url="https://tr.rbxcdn.com/180DAY-a62999e1c39906b4bc25a4a7302b0238/420/420/Image/Png/noFilter",expires=1792709954},
+["11558821665"]={url="https://tr.rbxcdn.com/180DAY-9fbe8aacdaebb842c9e534bf9afa416c/420/420/Image/Png/noFilter",expires=1792709954},
+["11558821878"]={url="https://tr.rbxcdn.com/180DAY-3b194a9329d1f03bf65fd32d198e1f83/420/420/Image/Png/noFilter",expires=1792709954},
+["11558822012"]={url="https://tr.rbxcdn.com/180DAY-c8c26a417be8238260151b9080cbfcdf/420/420/Image/Png/noFilter",expires=1792709954},
+["11558822269"]={url="https://tr.rbxcdn.com/180DAY-d01f1ac685f11058fa2d108d8d118215/420/420/Image/Png/noFilter",expires=1792709954},
+["11558822668"]={url="https://tr.rbxcdn.com/180DAY-8f2f7bcde5ac6aba55e0ad7d2b5d3890/420/420/Image/Png/noFilter",expires=1792709954},
+["11558822782"]={url="https://tr.rbxcdn.com/180DAY-44af3760ff07201385c128879ec2c013/420/420/Image/Png/noFilter",expires=1792709954},
+["11558822984"]={url="https://tr.rbxcdn.com/180DAY-31cefaca679ec3c83304bb3914ed7149/420/420/Image/Png/noFilter",expires=1792709954},
+["11558823237"]={url="https://tr.rbxcdn.com/180DAY-e83d79ea5c0c7e607c6a50bc1847f795/420/420/Image/Png/noFilter",expires=1792709954},
+["11558823417"]={url="https://tr.rbxcdn.com/180DAY-83cd16473eb5edb7f142d8a6bfd34a86/420/420/Image/Png/noFilter",expires=1792709954},
+["11558823672"]={url="https://tr.rbxcdn.com/180DAY-5291ce851e811ad706add529671e6889/420/420/Image/Png/noFilter",expires=1792709954},
+["11558823855"]={url="https://tr.rbxcdn.com/180DAY-0fad49691279bd2083c14ce8ce7407c8/420/420/Image/Png/noFilter",expires=1792709954},
+["11558824087"]={url="https://tr.rbxcdn.com/180DAY-edec47a2ab2714f9aa7aaedebba072f5/420/420/Image/Png/noFilter",expires=1792709954},
+["11558824284"]={url="https://tr.rbxcdn.com/180DAY-a34ba0bcd53d89b6580833a60d910a67/420/420/Image/Png/noFilter",expires=1792709954},
+["11558824445"]={url="https://tr.rbxcdn.com/180DAY-7d5111c94cbdd420d24d08dbecea1f50/420/420/Image/Png/noFilter",expires=1792709954},
+["11558824644"]={url="https://tr.rbxcdn.com/180DAY-e2f4886b3d8c04043a78b6aa998bb536/420/420/Image/Png/noFilter",expires=1792709954},
+["11558824892"]={url="https://tr.rbxcdn.com/180DAY-386bd5d4f05d9fa257d4f0f4d35459d8/420/420/Image/Png/noFilter",expires=1792709954},
+["11558825021"]={url="https://tr.rbxcdn.com/180DAY-13e5710f1fbffa9a3ea33e052d3e7055/420/420/Image/Png/noFilter",expires=1792709954},
+["11558826017"]={url="https://tr.rbxcdn.com/180DAY-8bc8827d4fd17d005aaa45cd01e1655f/420/420/Image/Png/noFilter",expires=1792709954},
+["11558826292"]={url="https://tr.rbxcdn.com/180DAY-6ee4399b7ab429495af43dbcbdb9d2ff/420/420/Image/Png/noFilter",expires=1792709954},
+["11558826454"]={url="https://tr.rbxcdn.com/180DAY-258819050c40032f1d4776347f83b92b/420/420/Image/Png/noFilter",expires=1792709954},
+["11558826716"]={url="https://tr.rbxcdn.com/180DAY-e8d7fb2a214ba7b982d70528acd2b42d/420/420/Image/Png/noFilter",expires=1792709954},
+["11558826954"]={url="https://tr.rbxcdn.com/180DAY-53d8d64251958b305d976433cddd482d/420/420/Image/Png/noFilter",expires=1792709954},
+["11558827099"]={url="https://tr.rbxcdn.com/180DAY-9138181369d01aff9b62ea410a461b91/420/420/Image/Png/noFilter",expires=1792709954},
+["11558827428"]={url="https://tr.rbxcdn.com/180DAY-bb0be69bebb0bd138185d04964786931/420/420/Image/Png/noFilter",expires=1792709954},
+["11558827623"]={url="https://tr.rbxcdn.com/180DAY-1df503d3bfd6f2821096befb75144130/420/420/Image/Png/noFilter",expires=1792709954},
+["11558827865"]={url="https://tr.rbxcdn.com/180DAY-5a1f48b69df6fbd443f0cb1c0d609162/420/420/Image/Png/noFilter",expires=1792709954},
+["11558828185"]={url="https://tr.rbxcdn.com/180DAY-34e8adb5c135c69be9565857d41ce789/420/420/Image/Png/noFilter",expires=1792709954},
+["11558828377"]={url="https://tr.rbxcdn.com/180DAY-62c90a9478d1a1ad81ee41df829331b6/420/420/Image/Png/noFilter",expires=1792709954},
+["11558828522"]={url="https://tr.rbxcdn.com/180DAY-ddd7393414d0f31e4e85f140fd2858dd/420/420/Image/Png/noFilter",expires=1792709954},
+["11558829719"]={url="https://tr.rbxcdn.com/180DAY-ddda96c022508448aab314d520c84396/420/420/Image/Png/noFilter",expires=1792709954},
+["11558830025"]={url="https://tr.rbxcdn.com/180DAY-d7ae434d01ef52faf7200f6cb29107ca/420/420/Image/Png/noFilter",expires=1792709954},
+["11623492062"]={url="https://tr.rbxcdn.com/180DAY-85b3f0ce62ddc9cba181d2cf4e380ccc/420/420/Image/Png/noFilter",expires=1792709954},
+["11623492208"]={url="https://tr.rbxcdn.com/180DAY-6fd66f8d33a9b331ee327718fd57cba6/420/420/Image/Png/noFilter",expires=1792709954},
+["11623492525"]={url="https://tr.rbxcdn.com/180DAY-24e4f27df29f39c929db660965ca8bd2/420/420/Image/Png/noFilter",expires=1792709954},
+["11623492658"]={url="https://tr.rbxcdn.com/180DAY-2f4b522b672f57d1b5d57d78432175b6/420/420/Image/Png/noFilter",expires=1792709954},
+["11623492807"]={url="https://tr.rbxcdn.com/180DAY-451c76d7a4ba99df582b36ca8cac29de/420/420/Image/Png/noFilter",expires=1792709954},
+["11623520034"]={url="https://tr.rbxcdn.com/180DAY-e13b98e8fcd9738bf0c2b5867b5bf13f/420/420/Image/Png/noFilter",expires=1792709954},
+["2511707072"]={url="https://tr.rbxcdn.com/180DAY-b009809b121391020ef8bb2e5626daba/420/420/Image/Png/noFilter",expires=1792709954},
+["2511715973"]={url="https://tr.rbxcdn.com/180DAY-e5f282b82c7699068374192bdb9a6615/420/420/Image/Png/noFilter",expires=1792709954},
+["2511721913"]={url="https://tr.rbxcdn.com/180DAY-190df3d6560cd0ace8db086dbb169bd3/420/420/Image/Png/noFilter",expires=1792709954},
+["2512695592"]={url="https://tr.rbxcdn.com/180DAY-4a7f38163af5166671a2f509261e9e70/420/420/Image/Png/noFilter",expires=1792709954},
+["2513252546"]={url="https://tr.rbxcdn.com/180DAY-97677be3a993908907f3971db3a89ee5/420/420/Image/Png/noFilter",expires=1792709954},
+["2513301363"]={url="https://tr.rbxcdn.com/180DAY-5a93c550684b2689b95e9522ef595a00/420/420/Image/Png/noFilter",expires=1792709954},
+["2514431372"]={url="https://tr.rbxcdn.com/180DAY-cb3c6f149b614600d8a06252687a89ec/420/420/Image/Png/noFilter",expires=1792709954},
+["2514431445"]={url="https://tr.rbxcdn.com/180DAY-5f87675a88349f56a64c7732985eac66/420/420/Image/Png/noFilter",expires=1792709954},
+["2515160303"]={url="https://tr.rbxcdn.com/180DAY-7da78404635e6b5bb32c68db66221cdf/420/420/Image/Png/noFilter",expires=1792709954},
+["2520304152"]={url="https://tr.rbxcdn.com/180DAY-94628ad7046cd8e1ff6126722bf92e24/420/420/Image/Png/noFilter",expires=1792709954},
+["2520313327"]={url="https://tr.rbxcdn.com/180DAY-c294e4bdd6b7a41bd979ebe46b35f0a3/420/420/Image/Png/noFilter",expires=1792709954},
+["2521613519"]={url="https://tr.rbxcdn.com/180DAY-19e77c6a0ea90f44ed73d9412534cb6d/420/420/Image/Png/noFilter",expires=1792709954},
+["2521613764"]={url="https://tr.rbxcdn.com/180DAY-ab1f1be77c0f91f6e87c207e9dad88fd/420/420/Image/Png/noFilter",expires=1792709954},
+["2521613927"]={url="https://tr.rbxcdn.com/180DAY-b55c187ec426c12e804d403e48cfbaf2/420/420/Image/Png/noFilter",expires=1792709954},
+["2521642419"]={url="https://tr.rbxcdn.com/180DAY-138ff2b374773ad35fea1c65c1ad5b56/420/420/Image/Png/noFilter",expires=1792709954},
+["2521642545"]={url="https://tr.rbxcdn.com/180DAY-88426e311c633c57c29f79dc225ce8a3/420/420/Image/Png/noFilter",expires=1792709954},
+["2521642665"]={url="https://tr.rbxcdn.com/180DAY-88096875e37d02b44c4994fe68d6ebff/420/420/Image/Png/noFilter",expires=1792709954},
+["2521642930"]={url="https://tr.rbxcdn.com/180DAY-f742b1777e130ddd5b057bf33858f176/420/420/Image/Png/noFilter",expires=1792709954},
+["2521657793"]={url="https://tr.rbxcdn.com/180DAY-f7b74b45dd2a37b2063a8f8804e2cb74/420/420/Image/Png/noFilter",expires=1792709954},
+["2521657919"]={url="https://tr.rbxcdn.com/180DAY-93380db80d55de6f22468ef617c6ceaa/420/420/Image/Png/noFilter",expires=1792709954},
+["2521658215"]={url="https://tr.rbxcdn.com/180DAY-d84ab5bb42a11c8573594107989da694/420/420/Image/Png/noFilter",expires=1792709954},
+["2521658340"]={url="https://tr.rbxcdn.com/180DAY-bd3f7cf3e5c25fd77fba8d4a6596a2d3/420/420/Image/Png/noFilter",expires=1792709954},
+["2574376938"]={url="https://tr.rbxcdn.com/180DAY-1ea44dda0e635ffaee69379d0f21078f/420/420/Image/Png/noFilter",expires=1792709954},
+["2574377179"]={url="https://tr.rbxcdn.com/180DAY-18fb82f90517c6316a534f091e7ebd9e/420/420/Image/Png/noFilter",expires=1792709954},
+["2574377368"]={url="https://tr.rbxcdn.com/180DAY-7c0334d79923edac6719cadf13c4b923/420/420/Image/Png/noFilter",expires=1792709954},
+["2610744829"]={url="https://tr.rbxcdn.com/180DAY-40e04f263814ae4d0923d19fff12cb48/420/420/Image/Png/noFilter",expires=1792709954},
+["2610930929"]={url="https://tr.rbxcdn.com/180DAY-76e3a0d0d97d8ed5032c5c402305ffd8/420/420/Image/Png/noFilter",expires=1792709954},
+["2611305024"]={url="https://tr.rbxcdn.com/180DAY-4976b6672a74cc406b934fd1a260763a/420/420/Image/Png/noFilter",expires=1792709954},
+["2611334168"]={url="https://tr.rbxcdn.com/180DAY-4a5f33f4acab3c830ecffe520dc1e233/420/420/Image/Png/noFilter",expires=1792709954},
+["2621050486"]={url="https://tr.rbxcdn.com/180DAY-24b1930c2248846ef993a57a968c8be6/420/420/Image/Png/noFilter",expires=1792709954},
+["2621336370"]={url="https://tr.rbxcdn.com/180DAY-ac6da0f3fedfa799a39569eb27a325a9/420/420/Image/Png/noFilter",expires=1792709954},
+["2621358544"]={url="https://tr.rbxcdn.com/180DAY-c7ccc13968519a8eed1b2bbaf9221aae/420/420/Image/Png/noFilter",expires=1792709954},
+["2703234723"]={url="https://tr.rbxcdn.com/180DAY-6a0938fc017c59ac2726fbee4840284c/420/420/Image/Png/noFilter",expires=1792709954},
+["2703234901"]={url="https://tr.rbxcdn.com/180DAY-b2c5442008484a8dceaf5cd420e76259/420/420/Image/Png/noFilter",expires=1792709954},
+["2703235305"]={url="https://tr.rbxcdn.com/180DAY-681a6046357aaa54d26a667ef63d589f/420/420/Image/Png/noFilter",expires=1792709954},
+["2703235526"]={url="https://tr.rbxcdn.com/180DAY-43a37a754223cf34a08961746f047fc6/420/420/Image/Png/noFilter",expires=1792709954},
+["2703235750"]={url="https://tr.rbxcdn.com/180DAY-2aa4221eb34d1176c231c6e06246e7da/420/420/Image/Png/noFilter",expires=1792709954},
+["2703235995"]={url="https://tr.rbxcdn.com/180DAY-385b98f78bbddff45afcd55923b627ed/420/420/Image/Png/noFilter",expires=1792709954},
+["2703236152"]={url="https://tr.rbxcdn.com/180DAY-0a46e14ee9c98b9dced60c655e223e26/420/420/Image/Png/noFilter",expires=1792709954},
+["2703236325"]={url="https://tr.rbxcdn.com/180DAY-2e4b06e630d2d8f6e2e3afc79d9db433/420/420/Image/Png/noFilter",expires=1792709954},
+["2703236768"]={url="https://tr.rbxcdn.com/180DAY-da04ccc11d6f1cff2e985adde970d03a/420/420/Image/Png/noFilter",expires=1792709954},
+["2703264822"]={url="https://tr.rbxcdn.com/180DAY-c3e3566bab61d973063d1f8d56efb550/420/420/Image/Png/noFilter",expires=1792709954},
+["2703264993"]={url="https://tr.rbxcdn.com/180DAY-89bc18c05c5446afdafa3d4f91bb4169/420/420/Image/Png/noFilter",expires=1792709954},
+["2703265268"]={url="https://tr.rbxcdn.com/180DAY-d90ec86d8375ed4e9547ea7e7a464438/420/420/Image/Png/noFilter",expires=1792709954},
+["2703265681"]={url="https://tr.rbxcdn.com/180DAY-fc5fc6c3360f1e03748c0a11efd1e983/420/420/Image/Png/noFilter",expires=1792709954},
+["2703265858"]={url="https://tr.rbxcdn.com/180DAY-ef8bcd25930c3363a9cf1b39e82059d0/420/420/Image/Png/noFilter",expires=1792709954},
+["2703265983"]={url="https://tr.rbxcdn.com/180DAY-206e488397df3cad7ed24fd4241d0cf5/420/420/Image/Png/noFilter",expires=1792709954},
+["2703266133"]={url="https://tr.rbxcdn.com/180DAY-64095f4141f777cb34274def92ede40a/420/420/Image/Png/noFilter",expires=1792709954},
+["2703266298"]={url="https://tr.rbxcdn.com/180DAY-347bcd0434fd11d7e7635f6147b20504/420/420/Image/Png/noFilter",expires=1792709954},
+["2703266523"]={url="https://tr.rbxcdn.com/180DAY-6218fbb8f370fbbbdf088dcc4b88712b/420/420/Image/Png/noFilter",expires=1792709954},
+["2718086298"]={url="https://tr.rbxcdn.com/180DAY-384edf3753b11563fdf60b4513df6238/420/420/Image/Png/noFilter",expires=1792709954},
+["2718086572"]={url="https://tr.rbxcdn.com/180DAY-ac9e3f4091acca76a538534f90224ca0/420/420/Image/Png/noFilter",expires=1792709954},
+["2718087053"]={url="https://tr.rbxcdn.com/180DAY-311c1f8486fadd4bf0d3f3fea046258c/420/420/Image/Png/noFilter",expires=1792709954},
+["2718087611"]={url="https://tr.rbxcdn.com/180DAY-a4cf428f2c531b7288a1213484b76edb/420/420/Image/Png/noFilter",expires=1792709954},
+["2718088003"]={url="https://tr.rbxcdn.com/180DAY-089ff57812c7d998721bd0ecb2d4e8b4/420/420/Image/Png/noFilter",expires=1792709954},
+["2718089746"]={url="https://tr.rbxcdn.com/180DAY-fb25bb33ff2c6b6f5ddf17facfea32f1/420/420/Image/Png/noFilter",expires=1792709954},
+["2718090040"]={url="https://tr.rbxcdn.com/180DAY-fa2633eac96cf51dbaed30c347cb7b47/420/420/Image/Png/noFilter",expires=1792709954},
+["2718090359"]={url="https://tr.rbxcdn.com/180DAY-f51875f66d50fe0bee0bd5e6629bcb47/420/420/Image/Png/noFilter",expires=1792709954},
+["2718090775"]={url="https://tr.rbxcdn.com/180DAY-65ecf6c1ca8cb28b5e1a51edc11556d9/420/420/Image/Png/noFilter",expires=1792709954},
+["2718139085"]={url="https://tr.rbxcdn.com/180DAY-b73497bd949d4f99af4daa30dbb6acd4/420/420/Image/Png/noFilter",expires=1792709954},
+["2744123452"]={url="https://tr.rbxcdn.com/180DAY-cfd075083876ef1fb49d74bb4a925df1/420/420/Image/Png/noFilter",expires=1792709954},
+["2768520109"]={url="https://tr.rbxcdn.com/180DAY-df52187fecdadd222092277b24669cd5/420/420/Image/Png/noFilter",expires=1792709954},
+["2820209684"]={url="https://tr.rbxcdn.com/180DAY-fab40ecb9b3efef4085010cbd2fd37c7/420/420/Image/Png/noFilter",expires=1792709954},
+["2820209799"]={url="https://tr.rbxcdn.com/180DAY-9e971726441bbe093c054c1915c5e77a/420/420/Image/Png/noFilter",expires=1792709954},
+["2820210011"]={url="https://tr.rbxcdn.com/180DAY-5baa12be965fb0e196788aedaf76b19b/420/420/Image/Png/noFilter",expires=1792709954},
+["2820210213"]={url="https://tr.rbxcdn.com/180DAY-ba06496ce3a0b7512087c28adae8ea05/420/420/Image/Png/noFilter",expires=1792709954},
+["2820229906"]={url="https://tr.rbxcdn.com/180DAY-17e2fd6339345a3652f435ebf10c696b/420/420/Image/Png/noFilter",expires=1792709954},
+["2823986768"]={url="https://tr.rbxcdn.com/180DAY-2fd936a9315e8839c89b5854779a8f76/420/420/Image/Png/noFilter",expires=1792709954},
+["2859306211"]={url="https://tr.rbxcdn.com/180DAY-6a55bf661125ce3faa0ebe3a09ecd413/420/420/Image/Png/noFilter",expires=1792709954},
+["2908342196"]={url="https://tr.rbxcdn.com/180DAY-13f77b8d53112b281e06ba91f20abbbb/420/420/Image/Png/noFilter",expires=1792709954},
+["2908342666"]={url="https://tr.rbxcdn.com/180DAY-6a79fc307cb4d4b7114814cd2e22d99f/420/420/Image/Png/noFilter",expires=1792709954},
+["2908343010"]={url="https://tr.rbxcdn.com/180DAY-5bc38f4a312d3cd8ca0f2a2f4f050849/420/420/Image/Png/noFilter",expires=1792709954},
+["2908343273"]={url="https://tr.rbxcdn.com/180DAY-15e727cca304b61de1c863cf6e2d2545/420/420/Image/Png/noFilter",expires=1792709954},
+["2908343473"]={url="https://tr.rbxcdn.com/180DAY-b76c60a8f7c6788a062990616da275c3/420/420/Image/Png/noFilter",expires=1792709954},
+["2908343808"]={url="https://tr.rbxcdn.com/180DAY-21580d831673d88cd1d0de4cadee1b62/420/420/Image/Png/noFilter",expires=1792709954},
+["2908344004"]={url="https://tr.rbxcdn.com/180DAY-7d772bdab270454c4560a0510f136106/420/420/Image/Png/noFilter",expires=1792709954},
+["2908344135"]={url="https://tr.rbxcdn.com/180DAY-562b025790ce84205246d6dafe53ff12/420/420/Image/Png/noFilter",expires=1792709954},
+["2908344750"]={url="https://tr.rbxcdn.com/180DAY-a11514412b378ada4d70f8cb1162651b/420/420/Image/Png/noFilter",expires=1792709954},
+["2908344917"]={url="https://tr.rbxcdn.com/180DAY-c5ac3beebfc348da987f273eb5cf32ac/420/420/Image/Png/noFilter",expires=1792709954},
+["2908345247"]={url="https://tr.rbxcdn.com/180DAY-3826e1451ca1d140d46936d578fb3026/420/420/Image/Png/noFilter",expires=1792709954},
+["2908345489"]={url="https://tr.rbxcdn.com/180DAY-b6436b141e2fea9c1e8ab7107aa04f50/420/420/Image/Png/noFilter",expires=1792709954},
+["2908345655"]={url="https://tr.rbxcdn.com/180DAY-b62fe27d8b75b14c3cd61f2dca2844f6/420/420/Image/Png/noFilter",expires=1792709954},
+["2908345874"]={url="https://tr.rbxcdn.com/180DAY-11c9e1c7d1fb5575d99693619980a84e/420/420/Image/Png/noFilter",expires=1792709954},
+["2911726485"]={url="https://tr.rbxcdn.com/180DAY-58de3f9f0df87512f2633e65e6a6e596/420/420/Image/Png/noFilter",expires=1792709954},
+["2911727123"]={url="https://tr.rbxcdn.com/180DAY-42f151e61f2931468f74406e4f4eb092/420/420/Image/Png/noFilter",expires=1792709954},
+["2911727556"]={url="https://tr.rbxcdn.com/180DAY-f9308d4595fb36e47d9a794c25b358c5/420/420/Image/Png/noFilter",expires=1792709954},
+["2911727978"]={url="https://tr.rbxcdn.com/180DAY-fe7815f4fe929b732e7d379e331e7f20/420/420/Image/Png/noFilter",expires=1792709954},
+["2911728222"]={url="https://tr.rbxcdn.com/180DAY-977da1eb910118f190c290da7276e295/420/420/Image/Png/noFilter",expires=1792709954},
+["2911728506"]={url="https://tr.rbxcdn.com/180DAY-5d930618ad7215147cf0b6194b8bfbbe/420/420/Image/Png/noFilter",expires=1792709954},
+["2911729020"]={url="https://tr.rbxcdn.com/180DAY-41e2eaf91ca11a6480f1b1ee82f3958d/420/420/Image/Png/noFilter",expires=1792709954},
+["2911729288"]={url="https://tr.rbxcdn.com/180DAY-65c9ac508b4e8444efbe0e9927443d13/420/420/Image/Png/noFilter",expires=1792709954},
+["2911729495"]={url="https://tr.rbxcdn.com/180DAY-2d1582dd3b4f4cc181bd9dce0256283e/420/420/Image/Png/noFilter",expires=1792709954},
+["2911729892"]={url="https://tr.rbxcdn.com/180DAY-3f6ccdd48d4f128b311f5a2961f64471/420/420/Image/Png/noFilter",expires=1792709954},
+["2911730485"]={url="https://tr.rbxcdn.com/180DAY-d0b188448c4a47f5c5a226879c12731f/420/420/Image/Png/noFilter",expires=1792709954},
+["2911730869"]={url="https://tr.rbxcdn.com/180DAY-c30623d4705e422a0e5d310430034cbc/420/420/Image/Png/noFilter",expires=1792709954},
+["2911731170"]={url="https://tr.rbxcdn.com/180DAY-fcc55a26e1ffb80987e009f247153b13/420/420/Image/Png/noFilter",expires=1792709954},
+["2911731525"]={url="https://tr.rbxcdn.com/180DAY-466401dff71ae948dffd6daa89ce0ce6/420/420/Image/Png/noFilter",expires=1792709954},
+["2911731800"]={url="https://tr.rbxcdn.com/180DAY-68ef7c745532d8f87c0435604f0bccbd/420/420/Image/Png/noFilter",expires=1792709954},
+["2911732046"]={url="https://tr.rbxcdn.com/180DAY-67ca93cd9bd9db6185bf4d477bd589e8/420/420/Image/Png/noFilter",expires=1792709954},
+["2911732722"]={url="https://tr.rbxcdn.com/180DAY-a583dd65c7d4626e1e21c95b75cddad7/420/420/Image/Png/noFilter",expires=1792709954},
+["2911733122"]={url="https://tr.rbxcdn.com/180DAY-cf7b31b529bcce1847e5a7e76cb766b7/420/420/Image/Png/noFilter",expires=1792709954},
+["2911803754"]={url="https://tr.rbxcdn.com/180DAY-9ccf214d2fbd1382cae8054761b9886b/420/420/Image/Png/noFilter",expires=1792709954},
+["2911804004"]={url="https://tr.rbxcdn.com/180DAY-77148c02152a6ac7210d46e758e7521e/420/420/Image/Png/noFilter",expires=1792709954},
+["2911804266"]={url="https://tr.rbxcdn.com/180DAY-443ccc9d3b3096c8e562625fb0ae27bf/420/420/Image/Png/noFilter",expires=1792709954},
+["2911804444"]={url="https://tr.rbxcdn.com/180DAY-2791b7e888f5eb625ecf6b29710d9ffe/420/420/Image/Png/noFilter",expires=1792709954},
+["2911804711"]={url="https://tr.rbxcdn.com/180DAY-b3cf19f50072fe4dfb1119c7b1fe0ca3/420/420/Image/Png/noFilter",expires=1792709954},
+["2911804895"]={url="https://tr.rbxcdn.com/180DAY-5719656da799fa7d45e47a81d62de6a9/420/420/Image/Png/noFilter",expires=1792709954},
+["2911805385"]={url="https://tr.rbxcdn.com/180DAY-0102a53be36accb26994d0eb68899cd5/420/420/Image/Png/noFilter",expires=1792709954},
+["2911805615"]={url="https://tr.rbxcdn.com/180DAY-7fe35dadb276c3ac85b0aa19f29b2288/420/420/Image/Png/noFilter",expires=1792709954},
+["2911805868"]={url="https://tr.rbxcdn.com/180DAY-11038558722ab41e8d23171a6d082d6a/420/420/Image/Png/noFilter",expires=1792709954},
+["2919770930"]={url="https://tr.rbxcdn.com/180DAY-ee1b33ad17d75f7582e5af3769353e9b/420/420/Image/Png/noFilter",expires=1792709954},
+["2919771304"]={url="https://tr.rbxcdn.com/180DAY-e5fca5b24ae6d286eb8d0e8b97622b40/420/420/Image/Png/noFilter",expires=1792709954},
+["2919771831"]={url="https://tr.rbxcdn.com/180DAY-34ae3cbb047b86d9313bdd2399611a0a/420/420/Image/Png/noFilter",expires=1792709954},
+["2919772448"]={url="https://tr.rbxcdn.com/180DAY-c9550e527e8ebe23da02a412d2e66a11/420/420/Image/Png/noFilter",expires=1792709954},
+["2919773590"]={url="https://tr.rbxcdn.com/180DAY-c45b287309430dc0a0b4043124265f6b/420/420/Image/Png/noFilter",expires=1792709954},
+["2919773900"]={url="https://tr.rbxcdn.com/180DAY-87a2cb22463f5edc3a51f83d2cc2b0fb/420/420/Image/Png/noFilter",expires=1792709954},
+["2919774496"]={url="https://tr.rbxcdn.com/180DAY-9bbc49faf2572a366988d3ac4b18a8ba/420/420/Image/Png/noFilter",expires=1792709954},
+["2919775696"]={url="https://tr.rbxcdn.com/180DAY-5853dff0b3f8d4c77da80ae862123b8f/420/420/Image/Png/noFilter",expires=1792709954},
+["2923909998"]={url="https://tr.rbxcdn.com/180DAY-3b9d6bca628a7054b7ae85fa08a69e30/420/420/Image/Png/noFilter",expires=1792709954},
+["2923910451"]={url="https://tr.rbxcdn.com/180DAY-d0cb07c4ad1e888d7711476fd026ee77/420/420/Image/Png/noFilter",expires=1792709954},
+["2923911030"]={url="https://tr.rbxcdn.com/180DAY-bb4f6e94487271fbb58669a4d1ae3639/420/420/Image/Png/noFilter",expires=1792709954},
+["2923911354"]={url="https://tr.rbxcdn.com/180DAY-251f8d31f996aa0c0891d57d4945fadf/420/420/Image/Png/noFilter",expires=1792709954},
+["2923911770"]={url="https://tr.rbxcdn.com/180DAY-c9e2ff7e9bd5ee2dd166bf764ad9e231/420/420/Image/Png/noFilter",expires=1792709954},
+["2923912159"]={url="https://tr.rbxcdn.com/180DAY-c62dc07b05bd753e49990fc9421ba8ca/420/420/Image/Png/noFilter",expires=1792709954},
+["2923912884"]={url="https://tr.rbxcdn.com/180DAY-6df3b1f38057721add7f496fb3eaa5f4/420/420/Image/Png/noFilter",expires=1792709954},
+["2923913298"]={url="https://tr.rbxcdn.com/180DAY-4d8a8032b78e09e20877d431a6fca6c4/420/420/Image/Png/noFilter",expires=1792709954},
+["2924294282"]={url="https://tr.rbxcdn.com/180DAY-5856b05ed4b55a9be4737f4a93324d82/420/420/Image/Png/noFilter",expires=1792709954},
+["2968933601"]={url="https://tr.rbxcdn.com/180DAY-af0a1e50587e710497f6518adda95127/420/420/Image/Png/noFilter",expires=1792709954},
+["2968933927"]={url="https://tr.rbxcdn.com/180DAY-66a4da6071eb7e7d55d41e498859cc85/420/420/Image/Png/noFilter",expires=1792709954},
+["2968934150"]={url="https://tr.rbxcdn.com/180DAY-461001a3727b9d43a210be72ab6123a0/420/420/Image/Png/noFilter",expires=1792709954},
+["2968934418"]={url="https://tr.rbxcdn.com/180DAY-982c98aebcd6df3bc34957d3dbeb4793/420/420/Image/Png/noFilter",expires=1792709954},
+["2968934693"]={url="https://tr.rbxcdn.com/180DAY-7b9ce10d801f141a14b01c7e6d82e96e/420/420/Image/Png/noFilter",expires=1792709954},
+["2968935228"]={url="https://tr.rbxcdn.com/180DAY-76b1c9297514fbf150114523430a5b33/420/420/Image/Png/noFilter",expires=1792709954},
+["2968935449"]={url="https://tr.rbxcdn.com/180DAY-e2d82ff039c87b7723f9f2db74a49525/420/420/Image/Png/noFilter",expires=1792709954},
+["2968935761"]={url="https://tr.rbxcdn.com/180DAY-16627f13343f4b0d31e14e45cee26ffa/420/420/Image/Png/noFilter",expires=1792709954},
+["2968935966"]={url="https://tr.rbxcdn.com/180DAY-960684a9e387e5dccb9b9c674ae680e3/420/420/Image/Png/noFilter",expires=1792709954},
+["2968936228"]={url="https://tr.rbxcdn.com/180DAY-0257e454741f4177c52ed926d2fb8df0/420/420/Image/Png/noFilter",expires=1792709954},
+["2968941341"]={url="https://tr.rbxcdn.com/180DAY-3e410010ea6d0eaa881b5fd5ec3c90d3/420/420/Image/Png/noFilter",expires=1792709954},
+["2968941706"]={url="https://tr.rbxcdn.com/180DAY-47b402103516c29f7180deaf3e23561f/420/420/Image/Png/noFilter",expires=1792709954},
+["2968941889"]={url="https://tr.rbxcdn.com/180DAY-34a29a8c7bfb489ced19b007e981f05a/420/420/Image/Png/noFilter",expires=1792709954},
+["2968942078"]={url="https://tr.rbxcdn.com/180DAY-ee447a32b336196fc1f0f0a450562b42/420/420/Image/Png/noFilter",expires=1792709954},
+["2968942306"]={url="https://tr.rbxcdn.com/180DAY-d8692ea00f962315456fe4fdc2c0d944/420/420/Image/Png/noFilter",expires=1792709954},
+["2968942570"]={url="https://tr.rbxcdn.com/180DAY-1b69d16ae61315619e9f173ef1dd7fad/420/420/Image/Png/noFilter",expires=1792709954},
+["2968942777"]={url="https://tr.rbxcdn.com/180DAY-f761afe06c7233d82c12242a8afe84a3/420/420/Image/Png/noFilter",expires=1792709954},
+["2968942998"]={url="https://tr.rbxcdn.com/180DAY-723c20b1b6ee381f402ae8da2de1b24a/420/420/Image/Png/noFilter",expires=1792709954},
+["2968943207"]={url="https://tr.rbxcdn.com/180DAY-632fc8017441bf36178f19e70d611c8d/420/420/Image/Png/noFilter",expires=1792709954},
+["2968944355"]={url="https://tr.rbxcdn.com/180DAY-de0d84c7909a9b6d498a0fd743c6bce0/420/420/Image/Png/noFilter",expires=1792709954},
+["2968944786"]={url="https://tr.rbxcdn.com/180DAY-7d04eeee9b7b33cfa5b916fa77811e1a/420/420/Image/Png/noFilter",expires=1792709954},
+["2968945104"]={url="https://tr.rbxcdn.com/180DAY-99b219ec9884951e4f18dd45967569b9/420/420/Image/Png/noFilter",expires=1792709954},
+["2985730059"]={url="https://tr.rbxcdn.com/180DAY-d6e373334d14fa15743a1b7abc3a106e/420/420/Image/Png/noFilter",expires=1792709954},
+["2985730646"]={url="https://tr.rbxcdn.com/180DAY-4ed39e256005b2db0e7d5e2c5526280d/420/420/Image/Png/noFilter",expires=1792709954},
+["2985731919"]={url="https://tr.rbxcdn.com/180DAY-49fa138a079d619ae6155dcf0e21935b/420/420/Image/Png/noFilter",expires=1792709954},
+["2985732294"]={url="https://tr.rbxcdn.com/180DAY-e264cc8eda9a25e288902898b259532f/420/420/Image/Png/noFilter",expires=1792709954},
+["2985732756"]={url="https://tr.rbxcdn.com/180DAY-65fc57b173c4d4a6bdd28fcace0c3f9f/420/420/Image/Png/noFilter",expires=1792709954},
+["2985915527"]={url="https://tr.rbxcdn.com/180DAY-2204ddf62b3be25f0d5020704edc9131/420/420/Image/Png/noFilter",expires=1792709954},
+["2986397312"]={url="https://tr.rbxcdn.com/180DAY-95872cbaf90731c6a6b3afe236ee1007/420/420/Image/Png/noFilter",expires=1792709954},
+["2986398108"]={url="https://tr.rbxcdn.com/180DAY-d65053d81ab87f4ddad33c1f4d00bdd9/420/420/Image/Png/noFilter",expires=1792709954},
+["2986398325"]={url="https://tr.rbxcdn.com/180DAY-dd85b18380564f66269e434737208567/420/420/Image/Png/noFilter",expires=1792709954},
+["2986398641"]={url="https://tr.rbxcdn.com/180DAY-e730c6142ff6a57c2fb73da90a8e9302/420/420/Image/Png/noFilter",expires=1792709954},
+["2986399235"]={url="https://tr.rbxcdn.com/180DAY-968cd2c35b65aeeccab51eba87fc27bd/420/420/Image/Png/noFilter",expires=1792709955},
+["2986399790"]={url="https://tr.rbxcdn.com/180DAY-3303f3f06522c5dff925511dc7429b44/420/420/Image/Png/noFilter",expires=1792709955},
+["2986400161"]={url="https://tr.rbxcdn.com/180DAY-5ed2f6aeff0ad8df9de40b316ea832a2/420/420/Image/Png/noFilter",expires=1792709955},
+["2986400841"]={url="https://tr.rbxcdn.com/180DAY-b2d6137a2de0b4d825c3380687f966a9/420/420/Image/Png/noFilter",expires=1792709955},
+["2986401342"]={url="https://tr.rbxcdn.com/180DAY-7b78d051c234b0ea291270476ffd7dfc/420/420/Image/Png/noFilter",expires=1792709955},
+["2986401536"]={url="https://tr.rbxcdn.com/180DAY-48ffe837995183b08b91124e406b1a1f/420/420/Image/Png/noFilter",expires=1792709955},
+["2986401967"]={url="https://tr.rbxcdn.com/180DAY-2c5c1c42195d78a7d7e76dfc366ad195/420/420/Image/Png/noFilter",expires=1792709955},
+["2986402449"]={url="https://tr.rbxcdn.com/180DAY-0b13f2c6d0709b5bcc9c34acf5124779/420/420/Image/Png/noFilter",expires=1792709955},
+["2986402737"]={url="https://tr.rbxcdn.com/180DAY-3e9093abb3db3c17e39b428ad3d75429/420/420/Image/Png/noFilter",expires=1792709955},
+["2986403083"]={url="https://tr.rbxcdn.com/180DAY-66173a3581e686514d0f943574387d2b/420/420/Image/Png/noFilter",expires=1792709955},
+["2986403421"]={url="https://tr.rbxcdn.com/180DAY-0c6bb236d6679778976f505f24e82abd/420/420/Image/Png/noFilter",expires=1792709955},
+["2986403693"]={url="https://tr.rbxcdn.com/180DAY-3a69df2fe1fe388be12970900a802327/420/420/Image/Png/noFilter",expires=1792709955},
+["2986403990"]={url="https://tr.rbxcdn.com/180DAY-2dbdb72066674e23f4147722dc0c7f86/420/420/Image/Png/noFilter",expires=1792709955},
+["2986404464"]={url="https://tr.rbxcdn.com/180DAY-725bbd4326fa0c7fd1e514672b22db4b/420/420/Image/Png/noFilter",expires=1792709955},
+["3038584536"]={url="https://tr.rbxcdn.com/180DAY-74af5c0fecaf6c504bd630884b37b312/420/420/Image/Png/noFilter",expires=1792709955},
+["3038584750"]={url="https://tr.rbxcdn.com/180DAY-284286e0e80c3166f85d7ecb181887e1/420/420/Image/Png/noFilter",expires=1792709955},
+["3038585086"]={url="https://tr.rbxcdn.com/180DAY-6b7188d8e25475045be3789c4906bfcd/420/420/Image/Png/noFilter",expires=1792709955},
+["3038585329"]={url="https://tr.rbxcdn.com/180DAY-6612e7ef01577737d42bb0ef74b67ada/420/420/Image/Png/noFilter",expires=1792709955},
+["3038585501"]={url="https://tr.rbxcdn.com/180DAY-78f1ba99870bc9de9d3fe6bd2e9082c4/420/420/Image/Png/noFilter",expires=1792709955},
+["3038585652"]={url="https://tr.rbxcdn.com/180DAY-202e5acb49e029f6c7986a0ccab41b7a/420/420/Image/Png/noFilter",expires=1792709955},
+["3038585816"]={url="https://tr.rbxcdn.com/180DAY-e5615a18ef9bd12b2b5439f3f8866901/420/420/Image/Png/noFilter",expires=1792709955},
+["3038586712"]={url="https://tr.rbxcdn.com/180DAY-8afc0e62c02f18389607960cd44747e5/420/420/Image/Png/noFilter",expires=1792709955},
+["3038586904"]={url="https://tr.rbxcdn.com/180DAY-9f1a41fec6e811e234f1c72e91d923d1/420/420/Image/Png/noFilter",expires=1792709955},
+["3038587105"]={url="https://tr.rbxcdn.com/180DAY-e1028a7f520aae152a25b83f73266bff/420/420/Image/Png/noFilter",expires=1792709955},
+["3038587428"]={url="https://tr.rbxcdn.com/180DAY-fe12131208e5bc639e0fb5587a156df0/420/420/Image/Png/noFilter",expires=1792709955},
+["3038587590"]={url="https://tr.rbxcdn.com/180DAY-5f7fa2a3cf546f6a387594dc8ae91fec/420/420/Image/Png/noFilter",expires=1792709955},
+["3038587751"]={url="https://tr.rbxcdn.com/180DAY-e19b33779356adb52bd75df6dfa877d2/420/420/Image/Png/noFilter",expires=1792709955},
+["3038587900"]={url="https://tr.rbxcdn.com/180DAY-4ef50959c25838b2177aad960475976e/420/420/Image/Png/noFilter",expires=1792709955},
+["3038588030"]={url="https://tr.rbxcdn.com/180DAY-cd2d04bf8d8109aee802de90ad8962ed/420/420/Image/Png/noFilter",expires=1792709955},
+["3038588310"]={url="https://tr.rbxcdn.com/180DAY-eccf3759f0ac7e65930a5bc211a8f22f/420/420/Image/Png/noFilter",expires=1792709955},
+["3038588526"]={url="https://tr.rbxcdn.com/180DAY-2d7995b3d9a31ca49ab3212b96afdcbb/420/420/Image/Png/noFilter",expires=1792709955},
+["3038588719"]={url="https://tr.rbxcdn.com/180DAY-e4347d76707adf019261f0e36c34af22/420/420/Image/Png/noFilter",expires=1792709955},
+["3038588974"]={url="https://tr.rbxcdn.com/180DAY-f4351989b59f6506cffaf894ad53959b/420/420/Image/Png/noFilter",expires=1792709955},
+["3038589142"]={url="https://tr.rbxcdn.com/180DAY-0cf326be798c9a04377470892cbca6b8/420/420/Image/Png/noFilter",expires=1792709955},
+["3038589317"]={url="https://tr.rbxcdn.com/180DAY-e29e33be8977a11ecb6b41b547f45f8f/420/420/Image/Png/noFilter",expires=1792709955},
+["3038589569"]={url="https://tr.rbxcdn.com/180DAY-64937c711c1893296a2caf644f848b2c/420/420/Image/Png/noFilter",expires=1792709955},
+["3039042794"]={url="https://tr.rbxcdn.com/180DAY-2f3fffaafba1c7a537ba10280801fc52/420/420/Image/Png/noFilter",expires=1792709955},
+["3039043129"]={url="https://tr.rbxcdn.com/180DAY-34f78ffade667c9ca4419026fd6c90a3/420/420/Image/Png/noFilter",expires=1792709955},
+["3039043317"]={url="https://tr.rbxcdn.com/180DAY-f13c99751f1b8e711454331ec4d40dc8/420/420/Image/Png/noFilter",expires=1792709955},
+["3039043561"]={url="https://tr.rbxcdn.com/180DAY-8a4490e6064fbd5fb9e42cdb393b0027/420/420/Image/Png/noFilter",expires=1792709955},
+["3039043730"]={url="https://tr.rbxcdn.com/180DAY-ddf6b34bb83f762a50577d04455c581e/420/420/Image/Png/noFilter",expires=1792709955},
+["3039043877"]={url="https://tr.rbxcdn.com/180DAY-2b851302ea90eb1fee9f7f091577fe13/420/420/Image/Png/noFilter",expires=1792709955},
+["3039044081"]={url="https://tr.rbxcdn.com/180DAY-c7de85664cceb08f8d09b916322fe837/420/420/Image/Png/noFilter",expires=1792709955},
+["3039044301"]={url="https://tr.rbxcdn.com/180DAY-6e4428d529d21de1fe60e53ca9b3306f/420/420/Image/Png/noFilter",expires=1792709955},
+["3039044487"]={url="https://tr.rbxcdn.com/180DAY-0f9bd4ce341b11b6382bcc641d04b379/420/420/Image/Png/noFilter",expires=1792709955},
+["3039044803"]={url="https://tr.rbxcdn.com/180DAY-e02ed0566e0219b7ec4be4b5db93fa0c/420/420/Image/Png/noFilter",expires=1792709955},
+["3039045057"]={url="https://tr.rbxcdn.com/180DAY-20ea2ea7f52ce3572b832b1b7b93df4f/420/420/Image/Png/noFilter",expires=1792709955},
+["3039045264"]={url="https://tr.rbxcdn.com/180DAY-41c402232dad6c7a8efb63503dd81cbc/420/420/Image/Png/noFilter",expires=1792709955},
+["3039045704"]={url="https://tr.rbxcdn.com/180DAY-496b9f5da7c0e6d2334a3554fe2991e5/420/420/Image/Png/noFilter",expires=1792709955},
+["3039047423"]={url="https://tr.rbxcdn.com/180DAY-10e62da904cc5b528ab60bdf59a0d311/420/420/Image/Png/noFilter",expires=1792709955},
+["3039047613"]={url="https://tr.rbxcdn.com/180DAY-8e4f24ed1d1d8a6f67fae5fbe617535a/420/420/Image/Png/noFilter",expires=1792709955},
+["3039047795"]={url="https://tr.rbxcdn.com/180DAY-be02c2e8f820540ffd18128e018343c6/420/420/Image/Png/noFilter",expires=1792709955},
+["3040144363"]={url="https://tr.rbxcdn.com/180DAY-600816eea44cbd070be642e17992ea8c/420/420/Image/Png/noFilter",expires=1792709955},
+["3040144692"]={url="https://tr.rbxcdn.com/180DAY-86a11de04b4c8d181ba2aceb637a476b/420/420/Image/Png/noFilter",expires=1792709955},
+["3040144898"]={url="https://tr.rbxcdn.com/180DAY-569b3068147635f333e82d2daf17d5d9/420/420/Image/Png/noFilter",expires=1792709955},
+["3040145096"]={url="https://tr.rbxcdn.com/180DAY-467e245ee4d5995d6dfa3cc5060784c7/420/420/Image/Png/noFilter",expires=1792709955},
+["3040146215"]={url="https://tr.rbxcdn.com/180DAY-e1247ae1ea19fea32b9d1e238d5e0f03/420/420/Image/Png/noFilter",expires=1792709955},
+["3040146940"]={url="https://tr.rbxcdn.com/180DAY-a2f075635447c2522c99adc9c3b6278b/420/420/Image/Png/noFilter",expires=1792709955},
+["3040155194"]={url="https://tr.rbxcdn.com/180DAY-b088ff2dcc5cad529ba0686764052f70/420/420/Image/Png/noFilter",expires=1792709955},
+["3114571835"]={url="https://tr.rbxcdn.com/180DAY-19eb710955fcd0e867a064615524e2cc/420/420/Image/Png/noFilter",expires=1792709955},
+["3114572017"]={url="https://tr.rbxcdn.com/180DAY-8a2506550d457f8e29c7f6b8b349a7c1/420/420/Image/Png/noFilter",expires=1792709955},
+["3114572160"]={url="https://tr.rbxcdn.com/180DAY-1ad24ec486be6fb10e633527ea22fda7/420/420/Image/Png/noFilter",expires=1792709955},
+["3114572345"]={url="https://tr.rbxcdn.com/180DAY-b3e1549362da2ea123aee07500db6811/420/420/Image/Png/noFilter",expires=1792709955},
+["3114572461"]={url="https://tr.rbxcdn.com/180DAY-03df75a4f87d5890d2ac2605a1aaf135/420/420/Image/Png/noFilter",expires=1792709955},
+["3114572655"]={url="https://tr.rbxcdn.com/180DAY-6293cee6881a1cc45371b19b299bc182/420/420/Image/Png/noFilter",expires=1792709955},
+["3114572805"]={url="https://tr.rbxcdn.com/180DAY-163fcbc6f0097a60652ad3900ce8200e/420/420/Image/Png/noFilter",expires=1792709955},
+["3114573030"]={url="https://tr.rbxcdn.com/180DAY-5d720545f4687339c416309ea69c7826/420/420/Image/Png/noFilter",expires=1792709955},
+["3114573195"]={url="https://tr.rbxcdn.com/180DAY-28601f1938218b08b9947ac1ba0bdd3b/420/420/Image/Png/noFilter",expires=1792709955},
+["3114573358"]={url="https://tr.rbxcdn.com/180DAY-40734877bd9c97392b3abd7502e9c385/420/420/Image/Png/noFilter",expires=1792709955},
+["3114573493"]={url="https://tr.rbxcdn.com/180DAY-fed81702cf43d23ab0cd42fe20e1b7e6/420/420/Image/Png/noFilter",expires=1792709955},
+["3114573834"]={url="https://tr.rbxcdn.com/180DAY-0e189586bda1b823396d43e81beceb7a/420/420/Image/Png/noFilter",expires=1792709955},
+["3114574029"]={url="https://tr.rbxcdn.com/180DAY-5f8dd77c7b253a50df3197a5b47902e1/420/420/Image/Png/noFilter",expires=1792709955},
+["3114574188"]={url="https://tr.rbxcdn.com/180DAY-501c68073b444007c7852bd68c4be940/420/420/Image/Png/noFilter",expires=1792709955},
+["3114574312"]={url="https://tr.rbxcdn.com/180DAY-0dce23b9ba0b0cf3be4b09f1c2c18f0e/420/420/Image/Png/noFilter",expires=1792709955},
+["3114574459"]={url="https://tr.rbxcdn.com/180DAY-7afc8a6e97c14a4f633304214736445e/420/420/Image/Png/noFilter",expires=1792709955},
+["3114574581"]={url="https://tr.rbxcdn.com/180DAY-1d32396d14bcc0d073bb30d35a615d32/420/420/Image/Png/noFilter",expires=1792709955},
+["3115073793"]={url="https://tr.rbxcdn.com/180DAY-1284430ff9a87e10dcdbba633729d418/420/420/Image/Png/noFilter",expires=1792709955},
+["3115074050"]={url="https://tr.rbxcdn.com/180DAY-fcd78d9272ded4e68c48682755ad416d/420/420/Image/Png/noFilter",expires=1792709955},
+["3115074302"]={url="https://tr.rbxcdn.com/180DAY-52ae3474e07163c0476f8cb421f561a9/420/420/Image/Png/noFilter",expires=1792709955},
+["3115074580"]={url="https://tr.rbxcdn.com/180DAY-e7fc7a53d5a0830e76f416ea761f14b4/420/420/Image/Png/noFilter",expires=1792709955},
+["3115074824"]={url="https://tr.rbxcdn.com/180DAY-31b4f124098aa1d51e85fd3deab92ebe/420/420/Image/Png/noFilter",expires=1792709955},
+["3115075055"]={url="https://tr.rbxcdn.com/180DAY-bb909feb2ce8a956fc1cdc952cfede07/420/420/Image/Png/noFilter",expires=1792709955},
+["3115075296"]={url="https://tr.rbxcdn.com/180DAY-15944def76bf006dfddd007ce0623167/420/420/Image/Png/noFilter",expires=1792709955},
+["3115075464"]={url="https://tr.rbxcdn.com/180DAY-0209f41a3a5219b04cec00c7fe294c7a/420/420/Image/Png/noFilter",expires=1792709955},
+["3115075699"]={url="https://tr.rbxcdn.com/180DAY-3d14773e01fbb10d8942c05f5dd78c08/420/420/Image/Png/noFilter",expires=1792709955},
+["3115075941"]={url="https://tr.rbxcdn.com/180DAY-4a39b5ce57c56e0945cca0c04e0ead3c/420/420/Image/Png/noFilter",expires=1792709955},
+["3115076106"]={url="https://tr.rbxcdn.com/180DAY-189e1aeb23722cc52cd20a555b644049/420/420/Image/Png/noFilter",expires=1792709955},
+["3115076302"]={url="https://tr.rbxcdn.com/180DAY-6bc5bec44f0b7c4e34b15040bbee08af/420/420/Image/Png/noFilter",expires=1792709955},
+["3115076547"]={url="https://tr.rbxcdn.com/180DAY-085edf5cd53777bb150d654f56650724/420/420/Image/Png/noFilter",expires=1792709955},
+["3115076733"]={url="https://tr.rbxcdn.com/180DAY-b6c38cb52787cabd2b84ca06b91ed557/420/420/Image/Png/noFilter",expires=1792709955},
+["3115077020"]={url="https://tr.rbxcdn.com/180DAY-5aa57399b971d765e2a4109289fca005/420/420/Image/Png/noFilter",expires=1792709955},
+["3115077234"]={url="https://tr.rbxcdn.com/180DAY-3f06479db703213e3faf2f069104e8af/420/420/Image/Png/noFilter",expires=1792709955},
+["3115077382"]={url="https://tr.rbxcdn.com/180DAY-01c70d7887e9ca1fe2f06db951117a6a/420/420/Image/Png/noFilter",expires=1792709955},
+["3115077571"]={url="https://tr.rbxcdn.com/180DAY-15f259a594da4a1826cc6e3562acb311/420/420/Image/Png/noFilter",expires=1792709955},
+["3115077748"]={url="https://tr.rbxcdn.com/180DAY-27c89b39327268bbd6c5d05085ec3c02/420/420/Image/Png/noFilter",expires=1792709955},
+["3115077967"]={url="https://tr.rbxcdn.com/180DAY-57643f744c2d08a9dbb2c12ce00588e9/420/420/Image/Png/noFilter",expires=1792709955},
+["3115155894"]={url="https://tr.rbxcdn.com/180DAY-36b1bb2438615daf8c6f56134224268c/420/420/Image/Png/noFilter",expires=1792709955},
+["3115156166"]={url="https://tr.rbxcdn.com/180DAY-c5ec498f190ab3c5d8fb46268f8a4127/420/420/Image/Png/noFilter",expires=1792709955},
+["3115156334"]={url="https://tr.rbxcdn.com/180DAY-70ba585dd65ecb38b248788c2a4146ef/420/420/Image/Png/noFilter",expires=1792709955},
+["3115156596"]={url="https://tr.rbxcdn.com/180DAY-93ca7bbcefbd0b7fe02895104e1f4122/420/420/Image/Png/noFilter",expires=1792709955},
+["3115157056"]={url="https://tr.rbxcdn.com/180DAY-e23397ff5ec42655773c4becfcff539a/420/420/Image/Png/noFilter",expires=1792709956},
+["3115157403"]={url="https://tr.rbxcdn.com/180DAY-b6a89f2b151e777e1460d3c3b5dc9e5f/420/420/Image/Png/noFilter",expires=1792709956},
+["3275245596"]={url="https://tr.rbxcdn.com/180DAY-65eb2164cbbc7afe58ea8b913a0a9b5d/420/420/Image/Png/noFilter",expires=1792709956},
+["3275245888"]={url="https://tr.rbxcdn.com/180DAY-29b08ebc9379ba246fcca9fca5d8018e/420/420/Image/Png/noFilter",expires=1792709956},
+["3275246199"]={url="https://tr.rbxcdn.com/180DAY-5624164e4bf0f2647002a7e6a65ca7cc/420/420/Image/Png/noFilter",expires=1792709956},
+["3275246477"]={url="https://tr.rbxcdn.com/180DAY-d74b9b79b1db2b5a79bf8a94fd7dbd12/420/420/Image/Png/noFilter",expires=1792709956},
+["3275246758"]={url="https://tr.rbxcdn.com/180DAY-e6c0bd5c7ad6cb3211be1427676f1043/420/420/Image/Png/noFilter",expires=1792709956},
+["3275247106"]={url="https://tr.rbxcdn.com/180DAY-7ac3f4ed59b23dcc16f0051c7168f864/420/420/Image/Png/noFilter",expires=1792709956},
+["3275247695"]={url="https://tr.rbxcdn.com/180DAY-8ca41b56585217f9df81e80dfb9757ae/420/420/Image/Png/noFilter",expires=1792709956},
+["3275248099"]={url="https://tr.rbxcdn.com/180DAY-f09ff9336236f2011dde60fbb66cfe3e/420/420/Image/Png/noFilter",expires=1792709956},
+["3275248540"]={url="https://tr.rbxcdn.com/180DAY-d93746a5c046be75a59ff024b5de94d0/420/420/Image/Png/noFilter",expires=1792709956},
+["3275248918"]={url="https://tr.rbxcdn.com/180DAY-f20a9a6b5e6d4afd8d0e947585b7c1f9/420/420/Image/Png/noFilter",expires=1792709956},
+["3275249447"]={url="https://tr.rbxcdn.com/180DAY-88d0e909352211c790417166acf1c648/420/420/Image/Png/noFilter",expires=1792709956},
+["3275250093"]={url="https://tr.rbxcdn.com/180DAY-5e4df5538f8f78f5297447ca1795bb6a/420/420/Image/Png/noFilter",expires=1792709956},
+["3275250377"]={url="https://tr.rbxcdn.com/180DAY-b8389872baa9aa89603e4843d7e50190/420/420/Image/Png/noFilter",expires=1792709956},
+["3275250648"]={url="https://tr.rbxcdn.com/180DAY-5e9bb8726714be4f2d40aea4281a72aa/420/420/Image/Png/noFilter",expires=1792709956},
+["3275251085"]={url="https://tr.rbxcdn.com/180DAY-f5c7443aeece3a526765b1f99b9c3b69/420/420/Image/Png/noFilter",expires=1792709956},
+["3275251342"]={url="https://tr.rbxcdn.com/180DAY-9a54958d5ea00bef56f5bd4ae65af9d1/420/420/Image/Png/noFilter",expires=1792709956},
+["3275251760"]={url="https://tr.rbxcdn.com/180DAY-4f6b173bcd0dd6ba05927c1260eb9740/420/420/Image/Png/noFilter",expires=1792709956},
+["3275252344"]={url="https://tr.rbxcdn.com/180DAY-7fed2a553fc0b2967136c81067e61b7a/420/420/Image/Png/noFilter",expires=1792709956},
+["3275252617"]={url="https://tr.rbxcdn.com/180DAY-50d56138ca6c103e33097da56155845d/420/420/Image/Png/noFilter",expires=1792709956},
+["3275252865"]={url="https://tr.rbxcdn.com/180DAY-c288bdd9d93598eb2e9680079b3e3d87/420/420/Image/Png/noFilter",expires=1792709956},
+["3275326675"]={url="https://tr.rbxcdn.com/180DAY-f15bdbbb3727b028c90329dca6eb3584/420/420/Image/Png/noFilter",expires=1792709956},
+["3275327540"]={url="https://tr.rbxcdn.com/180DAY-7f22359b02876daae245e525b3051c78/420/420/Image/Png/noFilter",expires=1792709956},
+["3275327794"]={url="https://tr.rbxcdn.com/180DAY-57cf615dd6d7d90442a0729135ef5aa5/420/420/Image/Png/noFilter",expires=1792709956},
+["3275328124"]={url="https://tr.rbxcdn.com/180DAY-780f9f5b7888f1ab8d5852236c6ded56/420/420/Image/Png/noFilter",expires=1792709956},
+["3275328550"]={url="https://tr.rbxcdn.com/180DAY-615ae732a1200271d372f9db358d2c59/420/420/Image/Png/noFilter",expires=1792709956},
+["3275328835"]={url="https://tr.rbxcdn.com/180DAY-ac781a4ef6fbb1ca1fbaa0a45cb837f4/420/420/Image/Png/noFilter",expires=1792709956},
+["3275329281"]={url="https://tr.rbxcdn.com/180DAY-f475cc69ff5d23a1447120483d6dc6ec/420/420/Image/Png/noFilter",expires=1792709956},
+["3275329528"]={url="https://tr.rbxcdn.com/180DAY-53e11154b4dede1d160b36b0e981974e/420/420/Image/Png/noFilter",expires=1792709956},
+["3275329787"]={url="https://tr.rbxcdn.com/180DAY-3f2b69d1f9c848b84f91f84952a3a33c/420/420/Image/Png/noFilter",expires=1792709956},
+["3275330093"]={url="https://tr.rbxcdn.com/180DAY-140d47414e0b3a2fbac36e275326ba42/420/420/Image/Png/noFilter",expires=1792709956},
+["3275330301"]={url="https://tr.rbxcdn.com/180DAY-7d8b3c4df11c532e46942253565b6279/420/420/Image/Png/noFilter",expires=1792709956},
+["3275330570"]={url="https://tr.rbxcdn.com/180DAY-0bd5d16aa4afab8df4e00da678fb9991/420/420/Image/Png/noFilter",expires=1792709956},
+["3275330997"]={url="https://tr.rbxcdn.com/180DAY-ed7232552feb56aed362c45d4bc9b829/420/420/Image/Png/noFilter",expires=1792709956},
+["3275331251"]={url="https://tr.rbxcdn.com/180DAY-d61aeb5151845017cfb15a35356fdd63/420/420/Image/Png/noFilter",expires=1792709956},
+["3275331443"]={url="https://tr.rbxcdn.com/180DAY-d1d9fcb5b9ce239c344f548919cea7b0/420/420/Image/Png/noFilter",expires=1792709956},
+["3275331615"]={url="https://tr.rbxcdn.com/180DAY-46eb2b1207b8c0053e8aa2c0cc4c5d46/420/420/Image/Png/noFilter",expires=1792709956},
+["3275331790"]={url="https://tr.rbxcdn.com/180DAY-fb7a2c8fbc083f512b8c72005accfca2/420/420/Image/Png/noFilter",expires=1792709956},
+["3275331997"]={url="https://tr.rbxcdn.com/180DAY-b582cd71df3d9160107528f9aabd43d0/420/420/Image/Png/noFilter",expires=1792709956},
+["3276263848"]={url="https://tr.rbxcdn.com/180DAY-68e630264cd26351d6561e3ac3635204/420/420/Image/Png/noFilter",expires=1792709956},
+["3276264186"]={url="https://tr.rbxcdn.com/180DAY-906301ef24f2381a465aea89e15767b3/420/420/Image/Png/noFilter",expires=1792709956},
+["3276264470"]={url="https://tr.rbxcdn.com/180DAY-c7e46afe43ed5cebdcf884c4964e0376/420/420/Image/Png/noFilter",expires=1792709956},
+["3276264842"]={url="https://tr.rbxcdn.com/180DAY-2861fcdd40021a5e2c3dce9d78e7b1ed/420/420/Image/Png/noFilter",expires=1792709956},
+["3276265175"]={url="https://tr.rbxcdn.com/180DAY-620e27b4c958ba129ce35789c08b6095/420/420/Image/Png/noFilter",expires=1792709956},
+["3276265493"]={url="https://tr.rbxcdn.com/180DAY-647cf10f43d03f11cfbd10d71913970c/420/420/Image/Png/noFilter",expires=1792709956},
+["3276265847"]={url="https://tr.rbxcdn.com/180DAY-c195c738654d0b395b641533ab7b78a1/420/420/Image/Png/noFilter",expires=1792709956},
+["3276266137"]={url="https://tr.rbxcdn.com/180DAY-863393720345a1fa5eedc52f8ec425a9/420/420/Image/Png/noFilter",expires=1792709956},
+["3276266442"]={url="https://tr.rbxcdn.com/180DAY-990b7b7c4690f79c21a2ef0e515d53c1/420/420/Image/Png/noFilter",expires=1792709956},
+["3434832514"]={url="https://tr.rbxcdn.com/180DAY-fe1a4ce15ba2c3891178ed8f7880497e/420/420/Image/Png/noFilter",expires=1792709956},
+["3434832894"]={url="https://tr.rbxcdn.com/180DAY-ef993b5ad0823cd21243b706cc0e65a1/420/420/Image/Png/noFilter",expires=1792709956},
+["3434833153"]={url="https://tr.rbxcdn.com/180DAY-52d210fc577057f3becf261a3ecf9492/420/420/Image/Png/noFilter",expires=1792709956},
+["3434833443"]={url="https://tr.rbxcdn.com/180DAY-41e4109eb8f19a89882753e2e7296603/420/420/Image/Png/noFilter",expires=1792709956},
+["3434833631"]={url="https://tr.rbxcdn.com/180DAY-e713100a9ee7c88a7e98e3a5e9cc6207/420/420/Image/Png/noFilter",expires=1792709956},
+["3434833814"]={url="https://tr.rbxcdn.com/180DAY-8ecffa0e7357a2b62997de8f761da13d/420/420/Image/Png/noFilter",expires=1792709956},
+["3434834028"]={url="https://tr.rbxcdn.com/180DAY-f36e016ae4890eefab76101176203127/420/420/Image/Png/noFilter",expires=1792709956},
+["3434834192"]={url="https://tr.rbxcdn.com/180DAY-c0a64d0f226ad37b6e5cfa8819b69ad7/420/420/Image/Png/noFilter",expires=1792709956},
+["3434834348"]={url="https://tr.rbxcdn.com/180DAY-955f567f8ae282b4022b9979b12a0f52/420/420/Image/Png/noFilter",expires=1792709956},
+["3434834612"]={url="https://tr.rbxcdn.com/180DAY-a6fced6fd41a52de315a5aca90752e82/420/420/Image/Png/noFilter",expires=1792709956},
+["3434834825"]={url="https://tr.rbxcdn.com/180DAY-770d264372cb62189328d8156a6af919/420/420/Image/Png/noFilter",expires=1792709956},
+["3434834992"]={url="https://tr.rbxcdn.com/180DAY-e1d27c249bf38ef9cdb973962b700b12/420/420/Image/Png/noFilter",expires=1792709956},
+["3434835143"]={url="https://tr.rbxcdn.com/180DAY-291b01d87ebd4efbc935b10a242e3859/420/420/Image/Png/noFilter",expires=1792709956},
+["3434835566"]={url="https://tr.rbxcdn.com/180DAY-6d1a7810becb33aa4c18d78a122209f3/420/420/Image/Png/noFilter",expires=1792709956},
+["3434835726"]={url="https://tr.rbxcdn.com/180DAY-4841688f621af4bde2d13433888668b3/420/420/Image/Png/noFilter",expires=1792709956},
+["3434836013"]={url="https://tr.rbxcdn.com/180DAY-fe814af2aa4bb218b6e7dcc69e97188a/420/420/Image/Png/noFilter",expires=1792709956},
+["3434836184"]={url="https://tr.rbxcdn.com/180DAY-2f238c9f13ecf150ed97e8f17f490e13/420/420/Image/Png/noFilter",expires=1792709956},
+["3434836386"]={url="https://tr.rbxcdn.com/180DAY-6d33a70636c08d455554b6a0b6a3f45a/420/420/Image/Png/noFilter",expires=1792709956},
+["3484481154"]={url="https://tr.rbxcdn.com/180DAY-aeb2b95e908397c5937348f118cb904b/420/420/Image/Png/noFilter",expires=1792709956},
+["3484481774"]={url="https://tr.rbxcdn.com/180DAY-612f0a2cc40b53ba63731395e1b42c2c/420/420/Image/Png/noFilter",expires=1792709956},
+["3484482431"]={url="https://tr.rbxcdn.com/180DAY-7b5ceb9680b264f7fede7f880cb5866c/420/420/Image/Png/noFilter",expires=1792709956},
+["3484482695"]={url="https://tr.rbxcdn.com/180DAY-edb0273d9ce580beb19a94f7258eb45d/420/420/Image/Png/noFilter",expires=1792709956},
+["3484482939"]={url="https://tr.rbxcdn.com/180DAY-ffd8545e00fb4b9d43a9f05c3be68fa6/420/420/Image/Png/noFilter",expires=1792709956},
+["3484488104"]={url="https://tr.rbxcdn.com/180DAY-e03a3329204d966a6a82d6602dbb773e/420/420/Image/Png/noFilter",expires=1792709956},
+["3484489072"]={url="https://tr.rbxcdn.com/180DAY-d20a3b6cc44bfc118c9baf12107503f9/420/420/Image/Png/noFilter",expires=1792709956},
+["3484489695"]={url="https://tr.rbxcdn.com/180DAY-c13416da83cf08bd7da8d0e5fb249b52/420/420/Image/Png/noFilter",expires=1792709956},
+["3484489972"]={url="https://tr.rbxcdn.com/180DAY-4fa3de45e99feb190b705c15f41518a2/420/420/Image/Png/noFilter",expires=1792709956},
+["3484490246"]={url="https://tr.rbxcdn.com/180DAY-24c91bdea3e695c9cfa09dcef14360ec/420/420/Image/Png/noFilter",expires=1792709956},
+["3484498440"]={url="https://tr.rbxcdn.com/180DAY-e49d4adb92a5d8769d3d45654a0d6ce5/420/420/Image/Png/noFilter",expires=1792709956},
+["3484498744"]={url="https://tr.rbxcdn.com/180DAY-a2acd5f69084dcf47a9b61844e112507/420/420/Image/Png/noFilter",expires=1792709956},
+["3484499067"]={url="https://tr.rbxcdn.com/180DAY-d53b3970f3282eee9e553873c5e47290/420/420/Image/Png/noFilter",expires=1792709956},
+["3484499540"]={url="https://tr.rbxcdn.com/180DAY-52462b0f9dd8460f86daeaa35760a12e/420/420/Image/Png/noFilter",expires=1792709956},
+["3484499810"]={url="https://tr.rbxcdn.com/180DAY-89bf6eb9fadc2ccfdb167d082317ab32/420/420/Image/Png/noFilter",expires=1792709956},
+["3484510156"]={url="https://tr.rbxcdn.com/180DAY-81d1b8c3b7b8194b79e7ce3c364a715f/420/420/Image/Png/noFilter",expires=1792709956},
+["3484510512"]={url="https://tr.rbxcdn.com/180DAY-e9ae9aef44053812a48e902b8d84ca7c/420/420/Image/Png/noFilter",expires=1792709956},
+["3484510730"]={url="https://tr.rbxcdn.com/180DAY-43278c9afc0ab2f9738da929f8bca1f6/420/420/Image/Png/noFilter",expires=1792709956},
+["3484510981"]={url="https://tr.rbxcdn.com/180DAY-fb7c24013629adfebf7f93d90f94b8a0/420/420/Image/Png/noFilter",expires=1792709956},
+["3484511291"]={url="https://tr.rbxcdn.com/180DAY-416336a7b9797a61f51aa6e69220f81f/420/420/Image/Png/noFilter",expires=1792709956},
+["3484523318"]={url="https://tr.rbxcdn.com/180DAY-46dbca1fb7d3dcaa6ba566edad7170e6/420/420/Image/Png/noFilter",expires=1792709956},
+["3484523568"]={url="https://tr.rbxcdn.com/180DAY-15260b39bfe77aec1e2f9473d12284a2/420/420/Image/Png/noFilter",expires=1792709956},
+["3484524027"]={url="https://tr.rbxcdn.com/180DAY-0c7ba05cd796bdf4d502df0523f26695/420/420/Image/Png/noFilter",expires=1792709956},
+["3484524273"]={url="https://tr.rbxcdn.com/180DAY-fc7d51bc9343b646b15b9c69ecc1125f/420/420/Image/Png/noFilter",expires=1792709956},
+["3484524514"]={url="https://tr.rbxcdn.com/180DAY-86bb4c75600c378b1bb0e4f2b7e61f87/420/420/Image/Png/noFilter",expires=1792709956},
+["3484534138"]={url="https://tr.rbxcdn.com/180DAY-75e5c5a384287b354822d655c4055264/420/420/Image/Png/noFilter",expires=1792709956},
+["3484534350"]={url="https://tr.rbxcdn.com/180DAY-6a643fe63248992d1182c964e8add342/420/420/Image/Png/noFilter",expires=1792709956},
+["3484534540"]={url="https://tr.rbxcdn.com/180DAY-6540e548ebd5942490e76b4dd3fdeced/420/420/Image/Png/noFilter",expires=1792709956},
+["3732364852"]={url="https://tr.rbxcdn.com/180DAY-a8702c624799c6ca605214bafa53caf7/420/420/Image/Png/noFilter",expires=1792709956},
+["3732365184"]={url="https://tr.rbxcdn.com/180DAY-6154506f1337e69604379bb25046b723/420/420/Image/Png/noFilter",expires=1792709956},
+["3732365436"]={url="https://tr.rbxcdn.com/180DAY-fa2ed7bca26e2a584eb2c0d27d0031bc/420/420/Image/Png/noFilter",expires=1792709956},
+["3732365900"]={url="https://tr.rbxcdn.com/180DAY-2cd520fe4a6a1179f09b8dc8983ecd6d/420/420/Image/Png/noFilter",expires=1792709956},
+["3732366631"]={url="https://tr.rbxcdn.com/180DAY-d2c4d2c572b543346db88561c21c390b/420/420/Image/Png/noFilter",expires=1792709956},
+["3732507231"]={url="https://tr.rbxcdn.com/180DAY-3acde3426548914846e7d65c080006d9/420/420/Image/Png/noFilter",expires=1792709957},
+["3732507585"]={url="https://tr.rbxcdn.com/180DAY-c8b98c1fb315c7b0e6af0503d48337e6/420/420/Image/Png/noFilter",expires=1792709957},
+["3732507862"]={url="https://tr.rbxcdn.com/180DAY-622d10c283610d56b3260509545788d4/420/420/Image/Png/noFilter",expires=1792709957},
+["3732508543"]={url="https://tr.rbxcdn.com/180DAY-efa02d1ad68f518d59f33ec49687232a/420/420/Image/Png/noFilter",expires=1792709957},
+["3732509392"]={url="https://tr.rbxcdn.com/180DAY-f99a64a21f03f0ed5453256f9c782ab3/420/420/Image/Png/noFilter",expires=1792709957},
+["3733461587"]={url="https://tr.rbxcdn.com/180DAY-bce328dcadf789acef14c8ecb09e85d2/420/420/Image/Png/noFilter",expires=1792709957},
+["3733462001"]={url="https://tr.rbxcdn.com/180DAY-a2b634bc551ebac65feeedbcfe6dc50b/420/420/Image/Png/noFilter",expires=1792709957},
+["3733462850"]={url="https://tr.rbxcdn.com/180DAY-2505bb93ce6785a21f02c1f2ad190db5/420/420/Image/Png/noFilter",expires=1792709957},
+["3733463235"]={url="https://tr.rbxcdn.com/180DAY-54f7326116b9b8bdc43183ab1279244b/420/420/Image/Png/noFilter",expires=1792709957},
+["3733464020"]={url="https://tr.rbxcdn.com/180DAY-e5d1cb4ecd35d130eca6f3ce4722e6b0/420/420/Image/Png/noFilter",expires=1792709957},
+["3733504016"]={url="https://tr.rbxcdn.com/180DAY-3032fd7eca674fc610f968a9b14f812b/420/420/Image/Png/noFilter",expires=1792709957},
+["3733504526"]={url="https://tr.rbxcdn.com/180DAY-ab5b8f500415511dfce4621c3f5e3257/420/420/Image/Png/noFilter",expires=1792709957},
+["3734321055"]={url="https://tr.rbxcdn.com/180DAY-edc626d51c04fbe2386bf0b8d7111f8f/420/420/Image/Png/noFilter",expires=1792709957},
+["3734321350"]={url="https://tr.rbxcdn.com/180DAY-46305377d5cff96c37e5d8c479094bb5/420/420/Image/Png/noFilter",expires=1792709957},
+["3734322100"]={url="https://tr.rbxcdn.com/180DAY-4221286d6e5b8b27937425ee0e16a325/420/420/Image/Png/noFilter",expires=1792709957},
+["3734322551"]={url="https://tr.rbxcdn.com/180DAY-5b3be229a1e106c4cd24afeee9083bff/420/420/Image/Png/noFilter",expires=1792709957},
+["3734322879"]={url="https://tr.rbxcdn.com/180DAY-fefaf8c30b0c6faf081cf61cbf7a5d2d/420/420/Image/Png/noFilter",expires=1792709957},
+["3734369298"]={url="https://tr.rbxcdn.com/180DAY-fb791ef967e0173624ec4725b9c6f73f/420/420/Image/Png/noFilter",expires=1792709957},
+["3734369793"]={url="https://tr.rbxcdn.com/180DAY-669ffb1e1f0456eb271a372dbc59e31a/420/420/Image/Png/noFilter",expires=1792709957},
+["3734370173"]={url="https://tr.rbxcdn.com/180DAY-aab0a8bde2e3a7ce3e9da5c8bf3db18c/420/420/Image/Png/noFilter",expires=1792709957},
+["3734370413"]={url="https://tr.rbxcdn.com/180DAY-5d61090f087cfe12e4d71cbb0b3f6179/420/420/Image/Png/noFilter",expires=1792709957},
+["3734370929"]={url="https://tr.rbxcdn.com/180DAY-5373d9c0e80d285abb54eaa983f3c9c9/420/420/Image/Png/noFilter",expires=1792709957},
+["3734413949"]={url="https://tr.rbxcdn.com/180DAY-e17ef69eac3d58254cbb14b299d1bcf2/420/420/Image/Png/noFilter",expires=1792709957},
+["3734414281"]={url="https://tr.rbxcdn.com/180DAY-21824c0d5c01678e146f427cdb51fef3/420/420/Image/Png/noFilter",expires=1792709957},
+["3734414710"]={url="https://tr.rbxcdn.com/180DAY-1f906180be6432b9c04725d17c228d2d/420/420/Image/Png/noFilter",expires=1792709957},
+["3734414935"]={url="https://tr.rbxcdn.com/180DAY-e9740648da8cd67c9dd36e67a03a144b/420/420/Image/Png/noFilter",expires=1792709957},
+["3734415265"]={url="https://tr.rbxcdn.com/180DAY-11b92766670824272cc832d4127fdb0d/420/420/Image/Png/noFilter",expires=1792709957},
+["3734425200"]={url="https://tr.rbxcdn.com/180DAY-4b8a2d12d4db88c88f4a6fb314d65cad/420/420/Image/Png/noFilter",expires=1792709957},
+["3734425496"]={url="https://tr.rbxcdn.com/180DAY-70a5b101d215a436c4bbf4d4f45ba610/420/420/Image/Png/noFilter",expires=1792709957},
+["3734425730"]={url="https://tr.rbxcdn.com/180DAY-655e84341afe5be99b641d77f3e73b04/420/420/Image/Png/noFilter",expires=1792709957},
+["3734426616"]={url="https://tr.rbxcdn.com/180DAY-8059c35902800b5cd8856414012f28d7/420/420/Image/Png/noFilter",expires=1792709957},
+["3734426882"]={url="https://tr.rbxcdn.com/180DAY-fa97f0af63280e93d63ce93ac93aa468/420/420/Image/Png/noFilter",expires=1792709957},
+["3734463449"]={url="https://tr.rbxcdn.com/180DAY-cbea125d19af6c863ebcb59eec52d933/420/420/Image/Png/noFilter",expires=1792709957},
+["3734463726"]={url="https://tr.rbxcdn.com/180DAY-5d6957be0cb689744025d6a51a3c51ae/420/420/Image/Png/noFilter",expires=1792709957},
+["3734464227"]={url="https://tr.rbxcdn.com/180DAY-786a865cdf8841dfd7eb1cf9efbb3ba7/420/420/Image/Png/noFilter",expires=1792709957},
+["3734464505"]={url="https://tr.rbxcdn.com/180DAY-f799509b4f90080c2a613894b75159ce/420/420/Image/Png/noFilter",expires=1792709957},
+["3734464926"]={url="https://tr.rbxcdn.com/180DAY-44b89b96a485b7704272be9def8f945c/420/420/Image/Png/noFilter",expires=1792709957},
+["3734488053"]={url="https://tr.rbxcdn.com/180DAY-1ae92950ec251d7cd37bcdd0c278dd74/420/420/Image/Png/noFilter",expires=1792709957},
+["3734805582"]={url="https://tr.rbxcdn.com/180DAY-4043bee5ffe0fb8b77ce223decd8bb15/420/420/Image/Png/noFilter",expires=1792709957},
+["384797849"]={url="https://tr.rbxcdn.com/180DAY-753fe1bc8cf80fbe8adf7f1d849f2ed6/420/420/Image/Png/noFilter",expires=1792709957},
+["4110959386"]={url="https://tr.rbxcdn.com/180DAY-ccb8e47a6ec7aa6a1df3e085c1adc5f7/420/420/Image/Png/noFilter",expires=1792709957},
+["4110959982"]={url="https://tr.rbxcdn.com/180DAY-f7cb83d657c13af0cbe31d96c26d0426/420/420/Image/Png/noFilter",expires=1792709957},
+["4110960375"]={url="https://tr.rbxcdn.com/180DAY-6dc17c73471369b305703e1190c26123/420/420/Image/Png/noFilter",expires=1792709957},
+["4110960933"]={url="https://tr.rbxcdn.com/180DAY-1105b4b51df4d6051149da6f4a8957bc/420/420/Image/Png/noFilter",expires=1792709957},
+["4110961421"]={url="https://tr.rbxcdn.com/180DAY-79e84a4298b7fc5edd02fbee7fb249fc/420/420/Image/Png/noFilter",expires=1792709957},
+["4110961799"]={url="https://tr.rbxcdn.com/180DAY-c088361c7599b6dd4b7445cf6e9d00ab/420/420/Image/Png/noFilter",expires=1792709957},
+["4110988298"]={url="https://tr.rbxcdn.com/180DAY-c7106ba3cf1855675248a234e33042ef/420/420/Image/Png/noFilter",expires=1792709957},
+["4110988717"]={url="https://tr.rbxcdn.com/180DAY-cd8e08ad18e6a1d9e627b4f55b8b3ff3/420/420/Image/Png/noFilter",expires=1792709957},
+["4110989084"]={url="https://tr.rbxcdn.com/180DAY-d5b4ef540e3de24a9a798d75e1c90bba/420/420/Image/Png/noFilter",expires=1792709957},
+["4110989670"]={url="https://tr.rbxcdn.com/180DAY-7e3aa6e477e6eba186e34b53d671486f/420/420/Image/Png/noFilter",expires=1792709957},
+["4110990098"]={url="https://tr.rbxcdn.com/180DAY-a26efbdffaacaefeaadaf7819592e219/420/420/Image/Png/noFilter",expires=1792709957},
+["4110990537"]={url="https://tr.rbxcdn.com/180DAY-8e36059931d3028706afaa4254e0f802/420/420/Image/Png/noFilter",expires=1792709957},
+["4110990990"]={url="https://tr.rbxcdn.com/180DAY-2cd07248f67d818d0f94409c52877c7a/420/420/Image/Png/noFilter",expires=1792709957},
+["4110991382"]={url="https://tr.rbxcdn.com/180DAY-3335d1e93847787257f3b81f8a85fdfd/420/420/Image/Png/noFilter",expires=1792709957},
+["4110991759"]={url="https://tr.rbxcdn.com/180DAY-2e38fdba1ec75c78c86fa07557987f54/420/420/Image/Png/noFilter",expires=1792709957},
+["4110998436"]={url="https://tr.rbxcdn.com/180DAY-9307a8623222eb03bda9963a1d34e42f/420/420/Image/Png/noFilter",expires=1792709957},
+["4110998780"]={url="https://tr.rbxcdn.com/180DAY-135afd7ec846173481932c99d5d54151/420/420/Image/Png/noFilter",expires=1792709957},
+["4110999126"]={url="https://tr.rbxcdn.com/180DAY-3f1dd00b99a9788c7ed7442aa2d564c6/420/420/Image/Png/noFilter",expires=1792709957},
+["4110999507"]={url="https://tr.rbxcdn.com/180DAY-d7e8d166ea1e9773eb54c95ac0cc7247/420/420/Image/Png/noFilter",expires=1792709957},
+["4110999805"]={url="https://tr.rbxcdn.com/180DAY-804fc0cbcde90ca6c4efefce393bbc22/420/420/Image/Png/noFilter",expires=1792709957},
+["4111000123"]={url="https://tr.rbxcdn.com/180DAY-a8dbe9c4c474c39d2f86a2dc08353ed3/420/420/Image/Png/noFilter",expires=1792709957},
+["4111000479"]={url="https://tr.rbxcdn.com/180DAY-a92392dc1442969c36eb7c9d0f400fa6/420/420/Image/Png/noFilter",expires=1792709957},
+["4111000791"]={url="https://tr.rbxcdn.com/180DAY-246f1747fececfa19a093d104c42eafd/420/420/Image/Png/noFilter",expires=1792709957},
+["4111003175"]={url="https://tr.rbxcdn.com/180DAY-656839f804540ea4c2b4ba47d70b5a11/420/420/Image/Png/noFilter",expires=1792709957},
+["4111003861"]={url="https://tr.rbxcdn.com/180DAY-f3471a4e6892a13d1e6a0788f45557fe/420/420/Image/Png/noFilter",expires=1792709957},
+["4111004318"]={url="https://tr.rbxcdn.com/180DAY-3a35bed6cf500e3c31f778a9d76aea62/420/420/Image/Png/noFilter",expires=1792709957},
+["4111005231"]={url="https://tr.rbxcdn.com/180DAY-8a13465c4015a60208aad959d71d3da4/420/420/Image/Png/noFilter",expires=1792709957},
+["4111011137"]={url="https://tr.rbxcdn.com/180DAY-8985f0abb5fd0d4129a32a58a4db2e58/420/420/Image/Png/noFilter",expires=1792709957},
+["4111011491"]={url="https://tr.rbxcdn.com/180DAY-0feaf80bf8e9b2a0bdff99d9f415de48/420/420/Image/Png/noFilter",expires=1792709957},
+["4111011865"]={url="https://tr.rbxcdn.com/180DAY-3361412961366b72577506855bb16d32/420/420/Image/Png/noFilter",expires=1792709957},
+["4111012204"]={url="https://tr.rbxcdn.com/180DAY-f1cafbb39169c4d8c5b883ab8c925251/420/420/Image/Png/noFilter",expires=1792709957},
+["4111012588"]={url="https://tr.rbxcdn.com/180DAY-09a58619bf3cf892c4da5cc375e1ad3b/420/420/Image/Png/noFilter",expires=1792709957},
+["4111013029"]={url="https://tr.rbxcdn.com/180DAY-4388de080864ec1c9e4ec71dad534a98/420/420/Image/Png/noFilter",expires=1792709957},
+["4111013455"]={url="https://tr.rbxcdn.com/180DAY-61787658ba226629d6e98bf87d604ac2/420/420/Image/Png/noFilter",expires=1792709957},
+["4111013795"]={url="https://tr.rbxcdn.com/180DAY-8ee52ecdd84cb7e6b26cf04a238714af/420/420/Image/Png/noFilter",expires=1792709957},
+["4111025343"]={url="https://tr.rbxcdn.com/180DAY-ebda16805b3d4a79d9577ccdc82deb1b/420/420/Image/Png/noFilter",expires=1792709957},
+["4111026362"]={url="https://tr.rbxcdn.com/180DAY-0250a7980111ad9a7f30037f1ef044f6/420/420/Image/Png/noFilter",expires=1792709957},
+["4111026739"]={url="https://tr.rbxcdn.com/180DAY-16771116f402f10e9406733bda734f3b/420/420/Image/Png/noFilter",expires=1792709957},
+["4111027068"]={url="https://tr.rbxcdn.com/180DAY-e0c164f6255eb8392c2d94c0a72a4fec/420/420/Image/Png/noFilter",expires=1792709957},
+["4111027423"]={url="https://tr.rbxcdn.com/180DAY-4b3c99f56932e554e0735ce959b272df/420/420/Image/Png/noFilter",expires=1792709957},
+["4111027727"]={url="https://tr.rbxcdn.com/180DAY-949b80c88ab0e3bdc9caaa82fc696abf/420/420/Image/Png/noFilter",expires=1792709957},
+["4111028069"]={url="https://tr.rbxcdn.com/180DAY-af99c22daa89768430901e95926f60ff/420/420/Image/Png/noFilter",expires=1792709957},
+["4111033824"]={url="https://tr.rbxcdn.com/180DAY-e1fe0d620357b4e3c82809a2c7964457/420/420/Image/Png/noFilter",expires=1792709957},
+["4111034252"]={url="https://tr.rbxcdn.com/180DAY-184e80fb8a11785752d0332f4f33104d/420/420/Image/Png/noFilter",expires=1792709957},
+["4111034625"]={url="https://tr.rbxcdn.com/180DAY-580eaa4426633d19474d8cfba879d727/420/420/Image/Png/noFilter",expires=1792709957},
+["4284621832"]={url="https://tr.rbxcdn.com/180DAY-071529148eeddb2b01ba099b61b1c828/420/420/Image/Png/noFilter",expires=1792709957},
+["4284622497"]={url="https://tr.rbxcdn.com/180DAY-c0f5a400b9d834888792517551592a0c/420/420/Image/Png/noFilter",expires=1792709957},
+["4284623101"]={url="https://tr.rbxcdn.com/180DAY-6c22998f3cc0bf0795e619bcaaaa8d9b/420/420/Image/Png/noFilter",expires=1792709957},
+["4284623555"]={url="https://tr.rbxcdn.com/180DAY-b574afd9969f13c3b9896a62aca3d819/420/420/Image/Png/noFilter",expires=1792709957},
+["4284624125"]={url="https://tr.rbxcdn.com/180DAY-c77abe0184c2d5dc8a8d22820398cb1a/420/420/Image/Png/noFilter",expires=1792709957},
+["4284625160"]={url="https://tr.rbxcdn.com/180DAY-9e40e8d287a274fbdf6ced721996581b/420/420/Image/Png/noFilter",expires=1792709957},
+["4284635863"]={url="https://tr.rbxcdn.com/180DAY-55d4e9dd469783e85727806d7ebc6827/420/420/Image/Png/noFilter",expires=1792709957},
+["4284636463"]={url="https://tr.rbxcdn.com/180DAY-6a9ff36e3f2ca20e6ca65082681ecd14/420/420/Image/Png/noFilter",expires=1792709957},
+["4284690067"]={url="https://tr.rbxcdn.com/180DAY-15418d550f746135959f1c918d74bd37/420/420/Image/Png/noFilter",expires=1792709957},
+["4284690591"]={url="https://tr.rbxcdn.com/180DAY-af619b51c511141a867ad2507e4af704/420/420/Image/Png/noFilter",expires=1792709957},
+["4284691047"]={url="https://tr.rbxcdn.com/180DAY-ecedb4d0ad5acb7fc4c9eb2b33ce50b5/420/420/Image/Png/noFilter",expires=1792709957},
+["4284691511"]={url="https://tr.rbxcdn.com/180DAY-d883a27f8b719878902b38354e7e3c8b/420/420/Image/Png/noFilter",expires=1792709957},
+["4284691881"]={url="https://tr.rbxcdn.com/180DAY-46bcb354411fcda5a654c429dc1c697e/420/420/Image/Png/noFilter",expires=1792709957},
+["4284692349"]={url="https://tr.rbxcdn.com/180DAY-07451cda7c98196cc8c8ce50206a79e3/420/420/Image/Png/noFilter",expires=1792709957},
+["4316781443"]={url="https://tr.rbxcdn.com/180DAY-47cc0b289fb1fc09f93fda744ccfcff4/420/420/Image/Png/noFilter",expires=1792709957},
+["4316781866"]={url="https://tr.rbxcdn.com/180DAY-8fe37cbb263bff7b750fc4702add7a13/420/420/Image/Png/noFilter",expires=1792709957},
+["4316782204"]={url="https://tr.rbxcdn.com/180DAY-6e4cd5e7e128c0356c06bb2cc330ebe2/420/420/Image/Png/noFilter",expires=1792709957},
+["4318579122"]={url="https://tr.rbxcdn.com/180DAY-085f35d20314b262326a37cf324ae597/420/420/Image/Png/noFilter",expires=1792709957},
+["4452299003"]={url="https://tr.rbxcdn.com/180DAY-02dee073e5e0680bb3d4bb48a4f2a68c/420/420/Image/Png/noFilter",expires=1792709957},
+["4452299205"]={url="https://tr.rbxcdn.com/180DAY-cb58602e000efdea411a63a39a9bf59a/420/420/Image/Png/noFilter",expires=1792709957},
+["4452299440"]={url="https://tr.rbxcdn.com/180DAY-600676b6e57c8c6b2c13d84e527db848/420/420/Image/Png/noFilter",expires=1792709957},
+["4452299619"]={url="https://tr.rbxcdn.com/180DAY-c608a96be8b0e1dbbcde0208cdc97f3f/420/420/Image/Png/noFilter",expires=1792709957},
+["4452305229"]={url="https://tr.rbxcdn.com/180DAY-81bcaa88101cdfd5b29347aca68b8610/420/420/Image/Png/noFilter",expires=1792709957},
+["4452305407"]={url="https://tr.rbxcdn.com/180DAY-15e5050f84aec53103b84b0be97362e7/420/420/Image/Png/noFilter",expires=1792709957},
+["4452305555"]={url="https://tr.rbxcdn.com/180DAY-e0b113db7603bbe3f5b002251613b3c1/420/420/Image/Png/noFilter",expires=1792709957},
+["4452305794"]={url="https://tr.rbxcdn.com/180DAY-fc662bb47a93416a009e91caecccdde3/420/420/Image/Png/noFilter",expires=1792709957},
+["4452305951"]={url="https://tr.rbxcdn.com/180DAY-32c16d9be6da2b7474ef8beff649889d/420/420/Image/Png/noFilter",expires=1792709957},
+["4452306101"]={url="https://tr.rbxcdn.com/180DAY-35a3b532ab892fe1dc0f1599d1bf3474/420/420/Image/Png/noFilter",expires=1792709957},
+["4452306305"]={url="https://tr.rbxcdn.com/180DAY-2d72626234f4f937d16570e516498e37/420/420/Image/Png/noFilter",expires=1792709957},
+["4452306487"]={url="https://tr.rbxcdn.com/180DAY-85c61f842219358b8f25d1ecbb63e7d1/420/420/Image/Png/noFilter",expires=1792709957},
+["4452306696"]={url="https://tr.rbxcdn.com/180DAY-88cb6db9a15f1fbcfce8f6dc36413aca/420/420/Image/Png/noFilter",expires=1792709957},
+["4452306965"]={url="https://tr.rbxcdn.com/180DAY-fad34c37defac2fdc2056eaf0e53c158/420/420/Image/Png/noFilter",expires=1792709957},
+["4452307153"]={url="https://tr.rbxcdn.com/180DAY-239751c536b9d76f4b7eaacab721f019/420/420/Image/Png/noFilter",expires=1792709957},
+["4452307374"]={url="https://tr.rbxcdn.com/180DAY-d1ed365f7d5408126b54c4c6b33b1857/420/420/Image/Png/noFilter",expires=1792709957},
+["4510337215"]={url="https://tr.rbxcdn.com/180DAY-72db75b598975c5e98695564f733d112/420/420/Image/Png/noFilter",expires=1792709957},
+["4510337377"]={url="https://tr.rbxcdn.com/180DAY-b340a95780f3b9dbf642080175a800c8/420/420/Image/Png/noFilter",expires=1792709957},
+["4510337522"]={url="https://tr.rbxcdn.com/180DAY-bf9f2a8abb0012fc89244768f8b8ebe4/420/420/Image/Png/noFilter",expires=1792709957},
+["4510337654"]={url="https://tr.rbxcdn.com/180DAY-76c706531b58338e7d62953116a2e997/420/420/Image/Png/noFilter",expires=1792709957},
+["4510337783"]={url="https://tr.rbxcdn.com/180DAY-000fec7f40178af32ee413d7a079fe86/420/420/Image/Png/noFilter",expires=1792709957},
+["4510337910"]={url="https://tr.rbxcdn.com/180DAY-3f9bc2969aa230a7cc677ac382000b94/420/420/Image/Png/noFilter",expires=1792709957},
+["4510338078"]={url="https://tr.rbxcdn.com/180DAY-eedefeb3e4820fbf3ebd92e7f2dd316e/420/420/Image/Png/noFilter",expires=1792709957},
+["4510338216"]={url="https://tr.rbxcdn.com/180DAY-81944f9eb34b2d4c61a58eba87701e7f/420/420/Image/Png/noFilter",expires=1792709957},
+["4510338336"]={url="https://tr.rbxcdn.com/180DAY-e8c9f93475cd7bf789aba4718a2fadc8/420/420/Image/Png/noFilter",expires=1792709957},
+["4510338450"]={url="https://tr.rbxcdn.com/180DAY-e4c49f2cd8fd01f11bf5e99a840a750a/420/420/Image/Png/noFilter",expires=1792709957},
+["4510338578"]={url="https://tr.rbxcdn.com/180DAY-700b8800a0214c5df1ca6684f7b7b80e/420/420/Image/Png/noFilter",expires=1792709957},
+["4510338726"]={url="https://tr.rbxcdn.com/180DAY-48c8859c2e96ecc6e6ee76c57dbd4878/420/420/Image/Png/noFilter",expires=1792709957},
+["4510338853"]={url="https://tr.rbxcdn.com/180DAY-169c1f424a0322b97d692ac058236c82/420/420/Image/Png/noFilter",expires=1792709957},
+["4510339003"]={url="https://tr.rbxcdn.com/180DAY-70a99c79dc8733b8f7180ae74c3b79ee/420/420/Image/Png/noFilter",expires=1792709957},
+["4510339139"]={url="https://tr.rbxcdn.com/180DAY-4ce7c97f8f4d850df7274a93d8ef13dc/420/420/Image/Png/noFilter",expires=1792709957},
+["4510339259"]={url="https://tr.rbxcdn.com/180DAY-b69c8f795fa6e4d73b1af5292a8f3894/420/420/Image/Png/noFilter",expires=1792709957},
+["4626313166"]={url="https://tr.rbxcdn.com/180DAY-65339ede70446605a315c4ab5f2d65f3/420/420/Image/Png/noFilter",expires=1792709957},
+["4626313283"]={url="https://tr.rbxcdn.com/180DAY-5d20be3897773c61634640a70654b385/420/420/Image/Png/noFilter",expires=1792709957},
+["4626313414"]={url="https://tr.rbxcdn.com/180DAY-054299d26003320f8a427143561e2829/420/420/Image/Png/noFilter",expires=1792709957},
+["4626313508"]={url="https://tr.rbxcdn.com/180DAY-0c550bea7bbef1ff1238e26c93cf93f8/420/420/Image/Png/noFilter",expires=1792709957},
+["4626313733"]={url="https://tr.rbxcdn.com/180DAY-44d69e7e639a1da28641b92d2f781e23/420/420/Image/Png/noFilter",expires=1792709957},
+["4626313841"]={url="https://tr.rbxcdn.com/180DAY-00c4461784b7553c671bb888b7eec374/420/420/Image/Png/noFilter",expires=1792709957},
+["4626313967"]={url="https://tr.rbxcdn.com/180DAY-6d03c18f78567c40fea3eca7e6a8c034/420/420/Image/Png/noFilter",expires=1792709957},
+["4626314075"]={url="https://tr.rbxcdn.com/180DAY-3b66cd1745b20f89695b6f4a56be6308/420/420/Image/Png/noFilter",expires=1792709957},
+["4626314148"]={url="https://tr.rbxcdn.com/180DAY-deeff4e905e2851783c0fab37b5a65ae/420/420/Image/Png/noFilter",expires=1792709957},
+["4626314263"]={url="https://tr.rbxcdn.com/180DAY-818493328acb28c43ba0e584b516bddf/420/420/Image/Png/noFilter",expires=1792709957},
+["4626314340"]={url="https://tr.rbxcdn.com/180DAY-6bbbedb2ccb9f4875b1c95db904d52fe/420/420/Image/Png/noFilter",expires=1792709957},
+["4626314410"]={url="https://tr.rbxcdn.com/180DAY-bfc251cfb8c6c86cde051efc4c07fe33/420/420/Image/Png/noFilter",expires=1792709957},
+["4626314519"]={url="https://tr.rbxcdn.com/180DAY-f0de9e909120cd1c67c4834ea2799ac9/420/420/Image/Png/noFilter",expires=1792709957},
+["4626314634"]={url="https://tr.rbxcdn.com/180DAY-9fd638cc89b1f5c21bd034dd240f669c/420/420/Image/Png/noFilter",expires=1792709957},
+["4626315033"]={url="https://tr.rbxcdn.com/180DAY-ce4a0ec1aefb350ffee064a5d5221ae0/420/420/Image/Png/noFilter",expires=1792709957},
+["4626315123"]={url="https://tr.rbxcdn.com/180DAY-86e52c7046caa853cf64222d0e7ff91d/420/420/Image/Png/noFilter",expires=1792709957},
+["4626315191"]={url="https://tr.rbxcdn.com/180DAY-545fc23aa30dff3c7ddcab75907ad0af/420/420/Image/Png/noFilter",expires=1792709957},
+["4626315259"]={url="https://tr.rbxcdn.com/180DAY-3c49f3b6b38981712005e4d61c46f773/420/420/Image/Png/noFilter",expires=1792709957},
+["4626315362"]={url="https://tr.rbxcdn.com/180DAY-c62417e48ef08f7c6d73245ab626e094/420/420/Image/Png/noFilter",expires=1792709957},
+["4626315453"]={url="https://tr.rbxcdn.com/180DAY-1122dfa604249a45ebcb54d8adfe0da5/420/420/Image/Png/noFilter",expires=1792709957},
+["4626315546"]={url="https://tr.rbxcdn.com/180DAY-4770dca2a7ab0e03534495aaf724af18/420/420/Image/Png/noFilter",expires=1792709957},
+["4626315652"]={url="https://tr.rbxcdn.com/180DAY-b52cf6a045ec70bc69cd5502c60a5e6e/420/420/Image/Png/noFilter",expires=1792709957},
+["4626315727"]={url="https://tr.rbxcdn.com/180DAY-c196c2612f6dff59085864733e4e45cf/420/420/Image/Png/noFilter",expires=1792709957},
+["4626315815"]={url="https://tr.rbxcdn.com/180DAY-b0a7ab296c8a101b18417c1e29131a67/420/420/Image/Png/noFilter",expires=1792709957},
+["4626315903"]={url="https://tr.rbxcdn.com/180DAY-10d6facd2f300e0bd7f7befc458217b8/420/420/Image/Png/noFilter",expires=1792709957},
+["4626316008"]={url="https://tr.rbxcdn.com/180DAY-131794120adcc69eae0b76205debc54e/420/420/Image/Png/noFilter",expires=1792709957},
+["4626316085"]={url="https://tr.rbxcdn.com/180DAY-6d72892a7cb37ccb32bb2b81ba116182/420/420/Image/Png/noFilter",expires=1792709957},
+["4626316167"]={url="https://tr.rbxcdn.com/180DAY-288484942d392332d5c127e60386d148/420/420/Image/Png/noFilter",expires=1792709957},
+["4626316242"]={url="https://tr.rbxcdn.com/180DAY-2ac4e40894604d25e960fd521383e090/420/420/Image/Png/noFilter",expires=1792709957},
+["4626316329"]={url="https://tr.rbxcdn.com/180DAY-ec1e6215eafe330e9cc51a567f4a8f3b/420/420/Image/Png/noFilter",expires=1792709957},
+["4626316425"]={url="https://tr.rbxcdn.com/180DAY-a9eed7d79612d334a7b96400cb6ba13d/420/420/Image/Png/noFilter",expires=1792709957},
+["4626316477"]={url="https://tr.rbxcdn.com/180DAY-ea927881514baee5c5dd5b3bb9063658/420/420/Image/Png/noFilter",expires=1792709957},
+["4626316551"]={url="https://tr.rbxcdn.com/180DAY-24dc0c4ec54e799df9edf5c727cc4e5e/420/420/Image/Png/noFilter",expires=1792709957},
+["4626316615"]={url="https://tr.rbxcdn.com/180DAY-5538c65074869af6d4209c9d02b50a05/420/420/Image/Png/noFilter",expires=1792709957},
+["4626316715"]={url="https://tr.rbxcdn.com/180DAY-d34782e61501dbfc83a791c1b2159aaf/420/420/Image/Png/noFilter",expires=1792709957},
+["4626316807"]={url="https://tr.rbxcdn.com/180DAY-37ccbcae2905558999f22825ab4ae0ff/420/420/Image/Png/noFilter",expires=1792709957},
+["4626316892"]={url="https://tr.rbxcdn.com/180DAY-24d6bcdf5319a7e28d5c0030d2baa2f8/420/420/Image/Png/noFilter",expires=1792709957},
+["4626316975"]={url="https://tr.rbxcdn.com/180DAY-7b4aa7b8195375b4316022d608da6ce2/420/420/Image/Png/noFilter",expires=1792709957},
+["5250370565"]={url="https://tr.rbxcdn.com/180DAY-a679e453934c2b49d12a634b1cb82d78/420/420/Image/Png/noFilter",expires=1792709957},
+["5250370880"]={url="https://tr.rbxcdn.com/180DAY-4e84bf8c15a5648edd01a513bb6fa3c2/420/420/Image/Png/noFilter",expires=1792709957},
+["5250371183"]={url="https://tr.rbxcdn.com/180DAY-07a198d494a8ab118b21be6db12c29cc/420/420/Image/Png/noFilter",expires=1792709957},
+["5250371513"]={url="https://tr.rbxcdn.com/180DAY-3b3d152e15ba09bbe6a8cf0900009fd8/420/420/Image/Png/noFilter",expires=1792709957},
+["5250371802"]={url="https://tr.rbxcdn.com/180DAY-5d7d5cc91c9a10a39c46fffd132c1bf9/420/420/Image/Png/noFilter",expires=1792709957},
+["5250372091"]={url="https://tr.rbxcdn.com/180DAY-cd22ff8fb728a696d385af816c5f6f87/420/420/Image/Png/noFilter",expires=1792709957},
+["5250372411"]={url="https://tr.rbxcdn.com/180DAY-1cc096acdcfc866d7a31fd67a2ab2fcd/420/420/Image/Png/noFilter",expires=1792709957},
+["5250372766"]={url="https://tr.rbxcdn.com/180DAY-e2a69b3b358c481ed0d5305ea2da9557/420/420/Image/Png/noFilter",expires=1792709957},
+["5250373076"]={url="https://tr.rbxcdn.com/180DAY-86c986edc2fe9bb8f6977dbabab7571b/420/420/Image/Png/noFilter",expires=1792709957},
+["5250373343"]={url="https://tr.rbxcdn.com/180DAY-9a16ed51e55df779db5f3023acca4ae0/420/420/Image/Png/noFilter",expires=1792709957},
+["5250374077"]={url="https://tr.rbxcdn.com/180DAY-12af4c3262cb0769eca71af3d9c9aabf/420/420/Image/Png/noFilter",expires=1792709957},
+["5250374427"]={url="https://tr.rbxcdn.com/180DAY-6d892a946e6c29ef04deb4a837bdd2a0/420/420/Image/Png/noFilter",expires=1792709957},
+["5250374941"]={url="https://tr.rbxcdn.com/180DAY-55ddd2a716cce9a4719525ed4bb46e88/420/420/Image/Png/noFilter",expires=1792709957},
+["5250375285"]={url="https://tr.rbxcdn.com/180DAY-0679d449ad0cd5d6dc8758944d721f00/420/420/Image/Png/noFilter",expires=1792709957},
+["5250428923"]={url="https://tr.rbxcdn.com/180DAY-88e6ca4424f43bac088b609f3db7896b/420/420/Image/Png/noFilter",expires=1792709957},
+["5250429234"]={url="https://tr.rbxcdn.com/180DAY-5392fd026649bc1441b42b0ab4d3bec2/420/420/Image/Png/noFilter",expires=1792709957},
+["5250429535"]={url="https://tr.rbxcdn.com/180DAY-ea79b06752ddf2f7dfbfc92f4dc8b8d4/420/420/Image/Png/noFilter",expires=1792709957},
+["5250429874"]={url="https://tr.rbxcdn.com/180DAY-473dbd87f83a6a22714570648bd97de1/420/420/Image/Png/noFilter",expires=1792709957},
+["5250430160"]={url="https://tr.rbxcdn.com/180DAY-9212b67462122f91a1720b47bb40b18c/420/420/Image/Png/noFilter",expires=1792709957},
+["5250430475"]={url="https://tr.rbxcdn.com/180DAY-f01b99ff774d4f51abd076d2ffd7dd77/420/420/Image/Png/noFilter",expires=1792709957},
+["5250430797"]={url="https://tr.rbxcdn.com/180DAY-fc848c72a706f7d5be37096470d05a6c/420/420/Image/Png/noFilter",expires=1792709957},
+["5250431075"]={url="https://tr.rbxcdn.com/180DAY-f894feadbf3ed754a7f718e0384be3eb/420/420/Image/Png/noFilter",expires=1792709957},
+["5250431379"]={url="https://tr.rbxcdn.com/180DAY-59e68475951eee6b1353d3f77c72eb4a/420/420/Image/Png/noFilter",expires=1792709957},
+["5250431666"]={url="https://tr.rbxcdn.com/180DAY-f91146d0588552ea435adddac7537cd7/420/420/Image/Png/noFilter",expires=1792709957},
+["5250431969"]={url="https://tr.rbxcdn.com/180DAY-3c6cff826e41e37718f3355fd372cab7/420/420/Image/Png/noFilter",expires=1792709957},
+["5250432232"]={url="https://tr.rbxcdn.com/180DAY-d5bf27a4876525e3c2980ffc0b0ab440/420/420/Image/Png/noFilter",expires=1792709957},
+["5250432530"]={url="https://tr.rbxcdn.com/180DAY-21b378a6b42741f66324d49534ff5876/420/420/Image/Png/noFilter",expires=1792709957},
+["5250432778"]={url="https://tr.rbxcdn.com/180DAY-5c1809a72724b477981f733c65e574e1/420/420/Image/Png/noFilter",expires=1792709959},
+["5250433087"]={url="https://tr.rbxcdn.com/180DAY-f2babfa37ebb4f5cde60c7ab2dde900a/420/420/Image/Png/noFilter",expires=1792709959},
+["5250433369"]={url="https://tr.rbxcdn.com/180DAY-e5851bf40410518e8da12116d3f74512/420/420/Image/Png/noFilter",expires=1792709959},
+["5250433628"]={url="https://tr.rbxcdn.com/180DAY-349b096a0d2a9186fc98a70b93a557f0/420/420/Image/Png/noFilter",expires=1792709959},
+["5250434060"]={url="https://tr.rbxcdn.com/180DAY-3dd69f56fbde03666418ae40227e62ba/420/420/Image/Png/noFilter",expires=1792709959},
+["5251636715"]={url="https://tr.rbxcdn.com/180DAY-aa03af8249055f3085fd07a2e9b4b5c6/420/420/Image/Png/noFilter",expires=1792709959},
+["5251636956"]={url="https://tr.rbxcdn.com/180DAY-0ecbb2cd1087817f522e86b8215a748c/420/420/Image/Png/noFilter",expires=1792709959},
+["5251637214"]={url="https://tr.rbxcdn.com/180DAY-f8eb3faec6eb0fdd5fa394c7ad08c3f6/420/420/Image/Png/noFilter",expires=1792709959},
+["5251637482"]={url="https://tr.rbxcdn.com/180DAY-e7fa061b665a0ed860b789e4518303ae/420/420/Image/Png/noFilter",expires=1792709959},
+["5251637778"]={url="https://tr.rbxcdn.com/180DAY-3157734aa9bd47df66453e75437c4f8b/420/420/Image/Png/noFilter",expires=1792709959},
+["5251638063"]={url="https://tr.rbxcdn.com/180DAY-ede4ea5f380f4c9c4c3c8cf59b8626ef/420/420/Image/Png/noFilter",expires=1792709959},
+["5251638369"]={url="https://tr.rbxcdn.com/180DAY-11cff88d1ff0b71ddb5f618468b46414/420/420/Image/Png/noFilter",expires=1792709959},
+["5251638613"]={url="https://tr.rbxcdn.com/180DAY-dd2f3b2094069e4bb6f69ba4bd768e00/420/420/Image/Png/noFilter",expires=1792709959},
+["6187424401"]={url="https://tr.rbxcdn.com/180DAY-9f45ba25738e616fb637e1429d28d8ff/420/420/Image/Png/noFilter",expires=1792709959},
+["6187424687"]={url="https://tr.rbxcdn.com/180DAY-6426c6f602727e2336292953283d1fd2/420/420/Image/Png/noFilter",expires=1792709959},
+["6187497907"]={url="https://tr.rbxcdn.com/180DAY-0d2d4e95b24925bef7b01cfba83e3ce2/420/420/Image/Png/noFilter",expires=1792709959},
+["6187498069"]={url="https://tr.rbxcdn.com/180DAY-924fe9253f0250095a9d8441ca5f0957/420/420/Image/Png/noFilter",expires=1792709959},
+["6187498386"]={url="https://tr.rbxcdn.com/180DAY-3ff29704109147b46d5dd84bcad7892d/420/420/Image/Png/noFilter",expires=1792709959},
+["6187498558"]={url="https://tr.rbxcdn.com/180DAY-df80d61f8c79f047833b4792742f4507/420/420/Image/Png/noFilter",expires=1792709959},
+["6187573164"]={url="https://tr.rbxcdn.com/180DAY-8741bf6512dea29ad2f4f054c14394ec/420/420/Image/Png/noFilter",expires=1792709959},
+["6187573499"]={url="https://tr.rbxcdn.com/180DAY-af1ee0306c297ae637d718d8f5025cd3/420/420/Image/Png/noFilter",expires=1792709959},
+["6187577481"]={url="https://tr.rbxcdn.com/180DAY-055b330a922e596972cc35737e3fdbce/420/420/Image/Png/noFilter",expires=1792709959},
+["6187577570"]={url="https://tr.rbxcdn.com/180DAY-d19937db346487dc625405f7c469c1a1/420/420/Image/Png/noFilter",expires=1792709959},
+["6187577643"]={url="https://tr.rbxcdn.com/180DAY-0e7da1ae6da5f5bc9089a2af6b26ef2a/420/420/Image/Png/noFilter",expires=1792709959},
+["6187577702"]={url="https://tr.rbxcdn.com/180DAY-55905418ed2c227451210e1f22aa16c4/420/420/Image/Png/noFilter",expires=1792709959},
+["6187577821"]={url="https://tr.rbxcdn.com/180DAY-b8cfca4ef4d1d8bb8f2a06ddd5ac726a/420/420/Image/Png/noFilter",expires=1792709959},
+["6187577884"]={url="https://tr.rbxcdn.com/180DAY-effbbe24fa27d874444008f4a556b3d3/420/420/Image/Png/noFilter",expires=1792709959},
+["6187577966"]={url="https://tr.rbxcdn.com/180DAY-3cebabc7a20cea95ee344a87d4ba2011/420/420/Image/Png/noFilter",expires=1792709959},
+["6187578017"]={url="https://tr.rbxcdn.com/180DAY-7c6709a4765145a490b297543323aebf/420/420/Image/Png/noFilter",expires=1792709959},
+["6187578086"]={url="https://tr.rbxcdn.com/180DAY-2a0ccbb487fb59b8bf109c1d91479c10/420/420/Image/Png/noFilter",expires=1792709959},
+["6187578195"]={url="https://tr.rbxcdn.com/180DAY-cc030c2c6be33e95e0fdf4c5af8bdf67/420/420/Image/Png/noFilter",expires=1792709959},
+["6187578293"]={url="https://tr.rbxcdn.com/180DAY-de8ce4a131054c3ccb90ead13f960dd8/420/420/Image/Png/noFilter",expires=1792709959},
+["6187578376"]={url="https://tr.rbxcdn.com/180DAY-2af47db3f45cdb33d20311f33bf7bc6a/420/420/Image/Png/noFilter",expires=1792709959},
+["6187578471"]={url="https://tr.rbxcdn.com/180DAY-c00b499ce9ed60fbcf06927b2f583489/420/420/Image/Png/noFilter",expires=1792709959},
+["6187578571"]={url="https://tr.rbxcdn.com/180DAY-cfbf51ae75cce3effb992f8d72f8cb19/420/420/Image/Png/noFilter",expires=1792709959},
+["6187578647"]={url="https://tr.rbxcdn.com/180DAY-42c60c9790f7e8b566d9e08ee788a178/420/420/Image/Png/noFilter",expires=1792709959},
+["6187578736"]={url="https://tr.rbxcdn.com/180DAY-b41bb52b3df1f3c3251491cbbbaa15c6/420/420/Image/Png/noFilter",expires=1792709959},
+["6187578814"]={url="https://tr.rbxcdn.com/180DAY-748a2e042c709a2df85138be6f22f61c/420/420/Image/Png/noFilter",expires=1792709959},
+["6187578883"]={url="https://tr.rbxcdn.com/180DAY-3ca4a45c933a6fd155b18cf49f1df007/420/420/Image/Png/noFilter",expires=1792709959},
+["6187578982"]={url="https://tr.rbxcdn.com/180DAY-54e8a3316ae2daa750114738e50c83b2/420/420/Image/Png/noFilter",expires=1792709959},
+["6187579049"]={url="https://tr.rbxcdn.com/180DAY-657d5f405ff54e61e774e5fefd736d67/420/420/Image/Png/noFilter",expires=1792709959},
+["6187579128"]={url="https://tr.rbxcdn.com/180DAY-3d23e8527cd4b8e448c0bd2d9400cf04/420/420/Image/Png/noFilter",expires=1792709959},
+["6187579195"]={url="https://tr.rbxcdn.com/180DAY-e3f1b9518a09e80a6ff1b3ad907a9752/420/420/Image/Png/noFilter",expires=1792709959},
+["6187591484"]={url="https://tr.rbxcdn.com/180DAY-0e95e0684ebbbf5f2a6044fa946f74df/420/420/Image/Png/noFilter",expires=1792709959},
+["6187591623"]={url="https://tr.rbxcdn.com/180DAY-a68a2efdac9a30ade05f626fa375c38f/420/420/Image/Png/noFilter",expires=1792709959},
+["6207983645"]={url="https://tr.rbxcdn.com/180DAY-9a1b852d05a92c2c4db86386acb62067/420/420/Image/Png/noFilter",expires=1792709959},
+["6207983767"]={url="https://tr.rbxcdn.com/180DAY-7f53d38d4f1c4bd3065d250e970ffa95/420/420/Image/Png/noFilter",expires=1792709959},
+["6207983856"]={url="https://tr.rbxcdn.com/180DAY-4e2b041723fbcd4eaeae59b278c082e5/420/420/Image/Png/noFilter",expires=1792709959},
+["6207983948"]={url="https://tr.rbxcdn.com/180DAY-ce2a74d2fd5880933ba0742b4a2f9b1e/420/420/Image/Png/noFilter",expires=1792709959},
+["6207984085"]={url="https://tr.rbxcdn.com/180DAY-ffe086d034eb3c45480b756324f4a168/420/420/Image/Png/noFilter",expires=1792709959},
+["6207984172"]={url="https://tr.rbxcdn.com/180DAY-97c0ac2e1d5e4dca5daca642d4d17ef4/420/420/Image/Png/noFilter",expires=1792709959},
+["6871197790"]={url="https://tr.rbxcdn.com/180DAY-7f2880490c70a26ec0ce3f1974ec9255/420/420/Image/Png/noFilter",expires=1792709959},
+["6871197922"]={url="https://tr.rbxcdn.com/180DAY-5fcdf4df3af4a8863da10a9c7960e378/420/420/Image/Png/noFilter",expires=1792709959},
+["6871198084"]={url="https://tr.rbxcdn.com/180DAY-f940bd662d56dc515b2fa65a14361fb6/420/420/Image/Png/noFilter",expires=1792709959},
+["6871198282"]={url="https://tr.rbxcdn.com/180DAY-eaad9a61821f0cb29edd40a3b5fa4356/420/420/Image/Png/noFilter",expires=1792709959},
+["6871198434"]={url="https://tr.rbxcdn.com/180DAY-10ec875ede97cd599efd417d23ff9b18/420/420/Image/Png/noFilter",expires=1792709959},
+["6871198713"]={url="https://tr.rbxcdn.com/180DAY-b1121b18a3482947d20fb6c372856665/420/420/Image/Png/noFilter",expires=1792709959},
+["6871198942"]={url="https://tr.rbxcdn.com/180DAY-afebcb752c382a2f2121f90fb0edaf4f/420/420/Image/Png/noFilter",expires=1792709959},
+["6871199079"]={url="https://tr.rbxcdn.com/180DAY-c7b491d0b275b1aa347f0e3ae6ff5d48/420/420/Image/Png/noFilter",expires=1792709959},
+["6871199225"]={url="https://tr.rbxcdn.com/180DAY-cd4532d4415ccf77b619ee4cf294613a/420/420/Image/Png/noFilter",expires=1792709959},
+["6871199674"]={url="https://tr.rbxcdn.com/180DAY-fc00470bf275f435c970b073281f15d2/420/420/Image/Png/noFilter",expires=1792709959},
+["6871199809"]={url="https://tr.rbxcdn.com/180DAY-37639d99c5b7f5e6c29fc07a3405687b/420/420/Image/Png/noFilter",expires=1792709959},
+["6871199914"]={url="https://tr.rbxcdn.com/180DAY-01de1411c68b28b7aa427962917b87b7/420/420/Image/Png/noFilter",expires=1792709959},
+["6871200060"]={url="https://tr.rbxcdn.com/180DAY-93ea1568aaeebf9ee008eec1089ef46d/420/420/Image/Png/noFilter",expires=1792709959},
+["6871200160"]={url="https://tr.rbxcdn.com/180DAY-4df05ff0bde20f300b29adb4aa0b4d54/420/420/Image/Png/noFilter",expires=1792709959},
+["6871200261"]={url="https://tr.rbxcdn.com/180DAY-8dfccf2ffba125d9edb117b789c8974c/420/420/Image/Png/noFilter",expires=1792709959},
+["6871200392"]={url="https://tr.rbxcdn.com/180DAY-edec0e500ecc7635c1559106a0915c03/420/420/Image/Png/noFilter",expires=1792709959},
+["6871200501"]={url="https://tr.rbxcdn.com/180DAY-e58b35d059a0410ddc6d1d1f433d394e/420/420/Image/Png/noFilter",expires=1792709959},
+["6871200604"]={url="https://tr.rbxcdn.com/180DAY-dc10cbe57040c3f167225a22d5b86164/420/420/Image/Png/noFilter",expires=1792709959},
+["6871200754"]={url="https://tr.rbxcdn.com/180DAY-95a0ddcc4637754d41b352ec1ecd17a7/420/420/Image/Png/noFilter",expires=1792709959},
+["6871200860"]={url="https://tr.rbxcdn.com/180DAY-6839f4be11a96321342940ce0cce4ac0/420/420/Image/Png/noFilter",expires=1792709959},
+["6871200984"]={url="https://tr.rbxcdn.com/180DAY-70f6bb8163b417276934ed6d6c6eedbb/420/420/Image/Png/noFilter",expires=1792709959},
+["6871201128"]={url="https://tr.rbxcdn.com/180DAY-7f19a44afbbbae0078be8ae908ef840b/420/420/Image/Png/noFilter",expires=1792709959},
+["6871201258"]={url="https://tr.rbxcdn.com/180DAY-1e5ec8d450a7fffd48f7ad486f21e5aa/420/420/Image/Png/noFilter",expires=1792709959},
+["6871201358"]={url="https://tr.rbxcdn.com/180DAY-4b048daea72c9369b25b30a192d3f9d9/420/420/Image/Png/noFilter",expires=1792709959},
+["6871201475"]={url="https://tr.rbxcdn.com/180DAY-a027e7b555da3883380167afcdb1ec6c/420/420/Image/Png/noFilter",expires=1792709959},
+["6871201596"]={url="https://tr.rbxcdn.com/180DAY-34fac9e4169c741da66db060e62f0d0a/420/420/Image/Png/noFilter",expires=1792709959},
+["6871201707"]={url="https://tr.rbxcdn.com/180DAY-ff30096c79d6607ddc80d32edcf674d7/420/420/Image/Png/noFilter",expires=1792709959},
+["6871201839"]={url="https://tr.rbxcdn.com/180DAY-688cd1d3a57552675f68c32116ca1fff/420/420/Image/Png/noFilter",expires=1792709959},
+["6871201943"]={url="https://tr.rbxcdn.com/180DAY-6859a51de5f1d5fa366944b0e2640ceb/420/420/Image/Png/noFilter",expires=1792709959},
+["6871202056"]={url="https://tr.rbxcdn.com/180DAY-306c49c02df4d56dfec50badabc634b3/420/420/Image/Png/noFilter",expires=1792709959},
+["6871202156"]={url="https://tr.rbxcdn.com/180DAY-da0235523e269cb0248eb406c9ad6a61/420/420/Image/Png/noFilter",expires=1792709959},
+["6871202291"]={url="https://tr.rbxcdn.com/180DAY-9cbc2bb7859f608c77628ad8a9064c77/420/420/Image/Png/noFilter",expires=1792709959},
+["6874804146"]={url="https://tr.rbxcdn.com/180DAY-c4a0a0f6b4ebd78742b643ab57b35bd4/420/420/Image/Png/noFilter",expires=1792709959},
+["6874804342"]={url="https://tr.rbxcdn.com/180DAY-5f6bb83843c69d875bb935178076cbb1/420/420/Image/Png/noFilter",expires=1792709959},
+["6874804465"]={url="https://tr.rbxcdn.com/180DAY-a7d79e8ff4b27bebf2044d67416aa057/420/420/Image/Png/noFilter",expires=1792709959},
+["6874804603"]={url="https://tr.rbxcdn.com/180DAY-b4a918a9e127d4cdb31b0eefd89b962b/420/420/Image/Png/noFilter",expires=1792709959},
+["6874804760"]={url="https://tr.rbxcdn.com/180DAY-2e5af74d98f19baf3dc7c11ee1ad76f9/420/420/Image/Png/noFilter",expires=1792709959},
+["6874804900"]={url="https://tr.rbxcdn.com/180DAY-7966e7901cb4121dd646a400d43844a3/420/420/Image/Png/noFilter",expires=1792709959},
+["6874805273"]={url="https://tr.rbxcdn.com/180DAY-8e3381515c6126638d66aee461ab9f0a/420/420/Image/Png/noFilter",expires=1792709959},
+["8349309115"]={url="https://tr.rbxcdn.com/180DAY-9c88e35fd4564f955599fdd2e9f4cc7b/420/420/Image/Png/noFilter",expires=1792709959},
+["8349309275"]={url="https://tr.rbxcdn.com/180DAY-30ed7309745946fe9d861ffd0d64f45c/420/420/Image/Png/noFilter",expires=1792709959},
+["8349309362"]={url="https://tr.rbxcdn.com/180DAY-f44eedb00508f96ce687008fc64023d9/420/420/Image/Png/noFilter",expires=1792709959},
+["8349309516"]={url="https://tr.rbxcdn.com/180DAY-08be1b154a55101f492379ae771c45a3/420/420/Image/Png/noFilter",expires=1792709959},
+["8349309617"]={url="https://tr.rbxcdn.com/180DAY-6ec0a49ac2f701f1034a34ec1577d31a/420/420/Image/Png/noFilter",expires=1792709959},
+["8349309782"]={url="https://tr.rbxcdn.com/180DAY-25afdbdc8e41a7ba621adb5146a0004a/420/420/Image/Png/noFilter",expires=1792709959},
+["8349310058"]={url="https://tr.rbxcdn.com/180DAY-947474a64728eeea85d018cdcc200785/420/420/Image/Png/noFilter",expires=1792709959},
+["8349310166"]={url="https://tr.rbxcdn.com/180DAY-f0923bda9e7567f1a1f758ea8fee3056/420/420/Image/Png/noFilter",expires=1792709959},
+["8349310227"]={url="https://tr.rbxcdn.com/180DAY-26f491c26a72fb22ec128f81490b1b43/420/420/Image/Png/noFilter",expires=1792709959},
+["8349310334"]={url="https://tr.rbxcdn.com/180DAY-771463debf83a0166b73466a75bd38b6/420/420/Image/Png/noFilter",expires=1792709959},
+["8349310505"]={url="https://tr.rbxcdn.com/180DAY-507da980df63b45d0b89de6c0d260ee3/420/420/Image/Png/noFilter",expires=1792709960},
+["8349310701"]={url="https://tr.rbxcdn.com/180DAY-3d4423028976742db2fe257dcd439c10/420/420/Image/Png/noFilter",expires=1792709960},
+["8349310824"]={url="https://tr.rbxcdn.com/180DAY-28438a5f5e06954f442260fd40f65117/420/420/Image/Png/noFilter",expires=1792709960},
+["8349310950"]={url="https://tr.rbxcdn.com/180DAY-4cfac4b56859b7125c26fa4e9154153f/420/420/Image/Png/noFilter",expires=1792709960},
+["8349311112"]={url="https://tr.rbxcdn.com/180DAY-146b55f7610c696d333632889a3f2bd4/420/420/Image/Png/noFilter",expires=1792709960},
+["8349311218"]={url="https://tr.rbxcdn.com/180DAY-372055d2d0ad859452f44d42416c577c/420/420/Image/Png/noFilter",expires=1792709960},
+["8349311318"]={url="https://tr.rbxcdn.com/180DAY-5024a386585b0c1e0b76e4720d54bd39/420/420/Image/Png/noFilter",expires=1792709960},
+["8349311436"]={url="https://tr.rbxcdn.com/180DAY-0fb4fca94cbd5415389666d77edcee97/420/420/Image/Png/noFilter",expires=1792709960},
+["8349311592"]={url="https://tr.rbxcdn.com/180DAY-6fc9d091ef6e900b7d948b5ce6289536/420/420/Image/Png/noFilter",expires=1792709960},
+["8349311950"]={url="https://tr.rbxcdn.com/180DAY-e326c9f97fd956fe87e522e5682769f5/420/420/Image/Png/noFilter",expires=1792709960},
+["8349312125"]={url="https://tr.rbxcdn.com/180DAY-afea83e23c18a46c9f6103ac40cd850f/420/420/Image/Png/noFilter",expires=1792709960},
+["8349312205"]={url="https://tr.rbxcdn.com/180DAY-377c241a3e7d9dcd9b266cea6f71c67a/420/420/Image/Png/noFilter",expires=1792709960},
+["8349312318"]={url="https://tr.rbxcdn.com/180DAY-142db24bd483d24b598f25947d67980d/420/420/Image/Png/noFilter",expires=1792709960},
+["8349312484"]={url="https://tr.rbxcdn.com/180DAY-633ce9f174df8de2b3320488ab7cd3b8/420/420/Image/Png/noFilter",expires=1792709960},
+["8349312615"]={url="https://tr.rbxcdn.com/180DAY-de916533bfb180829a7a22e6b12323fb/420/420/Image/Png/noFilter",expires=1792709960},
+["8349312703"]={url="https://tr.rbxcdn.com/180DAY-838e08bcd2b2451ba70ebce33bb2898b/420/420/Image/Png/noFilter",expires=1792709960},
+["8349312784"]={url="https://tr.rbxcdn.com/180DAY-5e0453bb156c22860f86f0d0d7ebc253/420/420/Image/Png/noFilter",expires=1792709960},
+["8349312958"]={url="https://tr.rbxcdn.com/180DAY-ff12692f1585ee9dfca0eafbf5af5c62/420/420/Image/Png/noFilter",expires=1792709960},
+["8349313160"]={url="https://tr.rbxcdn.com/180DAY-1dccf698aadcc5ee10fc2e0dea80431d/420/420/Image/Png/noFilter",expires=1792709960},
+["8349313309"]={url="https://tr.rbxcdn.com/180DAY-a4f639ca1b87e54a96732bb03d1315fe/420/420/Image/Png/noFilter",expires=1792709960},
+["8349313462"]={url="https://tr.rbxcdn.com/180DAY-b95c3671bae552525bf81f2e99fca560/420/420/Image/Png/noFilter",expires=1792709960},
+["8349313620"]={url="https://tr.rbxcdn.com/180DAY-cf0d17afbe9f16831edf0a281774bc8a/420/420/Image/Png/noFilter",expires=1792709960},
+["8349313743"]={url="https://tr.rbxcdn.com/180DAY-18950b25eeda2590a0b83ff9dd90417d/420/420/Image/Png/noFilter",expires=1792709960},
+["8349313894"]={url="https://tr.rbxcdn.com/180DAY-501c60b5818c2cbe3d9c889ca9b424ae/420/420/Image/Png/noFilter",expires=1792709960},
+["8349314058"]={url="https://tr.rbxcdn.com/180DAY-232b764a305ea7bb4ae1f576e07c809c/420/420/Image/Png/noFilter",expires=1792709960},
+["8352073326"]={url="https://tr.rbxcdn.com/180DAY-10ef8d91fccd64c523f7eea5cca5f28e/420/420/Image/Png/noFilter",expires=1792709960},
+["8352073533"]={url="https://tr.rbxcdn.com/180DAY-f5da492328e26b0422b3794b000f6511/420/420/Image/Png/noFilter",expires=1792709960},
+["8352073741"]={url="https://tr.rbxcdn.com/180DAY-310adbded41d0cca86bc1b58bddba8dd/420/420/Image/Png/noFilter",expires=1792709960},
+["91992159769625"]={url="https://tr.rbxcdn.com/180DAY-4ccf5a7c9fcac842667bd858193eb8e8/420/420/Image/Png/noFilter",expires=1792709960},
+["9821873895"]={url="https://tr.rbxcdn.com/180DAY-3fa3252f260c8265c1a723b41bab4e12/420/420/Image/Png/noFilter",expires=1792709960},
+["9821875398"]={url="https://tr.rbxcdn.com/180DAY-6f0b7e3d61fb2fb44aeabf5d437567df/420/420/Image/Png/noFilter",expires=1792709960},
+}}]=],
 ["inv++/harvard_camera_views.lua"]=[=[
 -- Additional camera views using public Obsidian controls and Roblox's camera.
 return function(B)
@@ -172059,6 +173539,8 @@ return function(context)
  end
  for name,v in pairs(context.CFG.sellKeep or {}) do if v==true then context.CFG.sellKeep[name:lower():gsub("[^a-z0-9]",""):gsub("armour","armor")]=true end end
  if context.saveConfig then context.saveConfig() end
+ assert(loadstring(readfile("Inv++/harvard_party.lua"),"Harvard active party"))()(context,B)
+ assert(loadstring(readfile("Inv++/harvard_webhook_art.lua"),"Harvard game item artwork"))()(context,B)
  assert(loadstring(readfile("Inv++/harvard_fleet.lua"),"Harvard shared inventory queue"))()(context,B)
  assert(loadstring(readfile("Inv++/harvard_transfer_upgrader.lua"),"Harvard transfer item upgrades"))()(B)
  local originalProtect=B.protected
@@ -172116,6 +173598,7 @@ return function(context)
   X.alive=false
   if B.Configs then B.Configs.destroy() end if B.Tuning then B.Tuning.destroy() end
   if B.Statistics then B.Statistics.destroy() end
+  if B.PartyCoordinator then B.PartyCoordinator.destroy() end
   if B.Guests then B.Guests.destroy() end if B.PartyDashboard then B.PartyDashboard.destroy() end
   if B.CameraViews then B.CameraViews.destroy() end if B.library and B.library.destroy then B.library.destroy() end
   if E.InvPlusHarvard==B then E.InvPlusHarvard=nil end
@@ -172150,7 +173633,11 @@ return function(context,B,C)
   return q
  end
  function B.allReady(members,settled)
-  if #members~=#F.config.roster or #members<2 then return false,"Waiting for every registered client" end
+  local required=B.requiredRoster and B.requiredRoster(members) or F.config.roster
+  local present={} for _,m in ipairs(members) do present[m.id]=true end
+  local missing={} for _,m in ipairs(required) do if not present[m.id] then table.insert(missing,m.name) end end
+  if #missing>0 then return false,"Waiting for Harvard on "..table.concat(missing,", ") end
+  if #members~=#required or #members<1 then return false,"Checking the online party lineup" end
   for _,m in ipairs(members) do
    local q=m.harvard
    if not q or q.version~=1 or now()-(q.at or 0)>5 or q.blocked or not q.queuePaused then return false,"Waiting for Harvard on "..m.name end
@@ -172190,7 +173677,8 @@ return function(context,B,C)
  end
  function B.replayDecision()
   local d=read(root.."/replay.json")
-  if d and d.job==jobId() and type(d.created)=="number" and now()-d.created<120 and d.count==#B.F.config.roster then return d end
+  local members=F.members() local required=B.requiredRoster and B.requiredRoster(members) or F.config.roster
+  if d and d.job==jobId() and type(d.created)=="number" and now()-d.created<120 and d.count==#required and (not B.requiredSignature or d.signature==B.requiredSignature(members)) then return d end
  end
  function B.newQueueJob(members)
   local d=B.destination(members) if not d then return end
@@ -172251,9 +173739,30 @@ return function(context,B,C)
    if needsLobby then F.status=reason return B.newQueueJob(members) end
    local run=members[1].job
    for _,m in ipairs(members) do if m.job~=run then F.status="Waiting for the party in the same dungeon" return end end
-   write(root.."/replay.json",{job=run,created=now(),count=#members})
+   write(root.."/replay.json",{job=run,created=now(),count=#members,signature=B.requiredSignature and B.requiredSignature(members)})
    F.status="Replaying dungeon — no useful gear changes"
    return
+  end
+  -- Queue-only work has no item ownership in flight; adapt it to online clients.
+  -- Trades and equip verification retain their exact participants until finished.
+  if B.requiredRoster and (j.queueOnly and j.stage=="gather" or j.stage=="requeue") then
+   local roster=B.requiredRoster(members) local before={} local after={}
+   for _,m in ipairs(j.members) do table.insert(before,tostring(m.id)) end
+   for _,m in ipairs(roster) do table.insert(after,tostring(m.id)) end table.sort(before) table.sort(after)
+   if table.concat(before,",")~=table.concat(after,",") and #roster>0 then j.members=roster j.updated=now() write(root.."/job.json",j) end
+  end
+  if B.requiredRoster and j.queueOnly and j.stage=="departing" then
+   local online={} for _,m in ipairs(B.requiredRoster(members)) do online[m.id]=true end
+   local roster={} for _,m in ipairs(j.members) do if online[m.id] then table.insert(roster,m) end end
+   if #roster>0 and #roster<#j.members then j.members=roster write(root.."/job.json",j) end
+  end
+  if j.stage=="departing" and now()-(j.startRequestedAt or j.updated or now())>=12 then
+   local allLobby=#members>0 for _,m in ipairs(members) do if not m.lobby then allLobby=false end end
+   if allLobby then
+    if (j.startAttempts or 1)>=3 then return F.fail(j,"Game did not confirm dungeon start after 3 attempts; check the open dungeon party") end
+    j.stage="requeue" j.updated=now() j.progressAt=now() write(root.."/job.json",j)
+    F.status="Retrying start — the game has not confirmed the previous request"
+   end
   end
   B.reanchorGather(j,members)
   if not j.queueOnly then return original.coordinate(j,members) end
@@ -172301,7 +173810,12 @@ return function(context,B,C)
   local members=F.members() local ready,message=B.allReady(members,true)
   if not ready then F.status=message return end
   if F.config.cleanupAutoSell then for _,m in ipairs(members) do if not m.harvard.salesReady then F.status="Finishing protected auto-sell on "..m.name return end end end
-  return baseRequeue(j)
+  local attempts=j.startAttempts or 0
+  local result=baseRequeue(j)
+  if j.stage=="departing" and (j.startAttempts or 0)==attempts then
+   j.startAttempts=attempts+1 j.startRequestedAt=now() write(root.."/job.json",j)
+  end
+  return result
  end
  local baseDestroy=B.destroy
  B.destroy=function()
@@ -172450,7 +173964,7 @@ return function(B,C)
   end
   local remaining=G.config.waitSeconds-(now()-window.started)
   if remaining>0 then status("Guest join window: "..remaining.."s · "..G.config.mode) return end
-  j.stage="departing" j.updated=now() write(jobPath,j)
+  j.stage="departing" j.updated=now() j.startRequestedAt=now() j.startAttempts=(j.startAttempts or 0)+1 write(jobPath,j)
   fire("startDungeon") status("Starting dungeon with allowed guests")
  end
  F.workRequeue=G.workRequeue
@@ -172485,6 +173999,171 @@ return function(B,C)
   G.destroy()
  end) end
  return G
+end
+]=],
+["inv++/harvard_party.lua"]=[=[
+-- One explanation of the active party. The registered roster remains saved.
+return function(C,B,O)
+ O=O or {} if B.PartyCoordinator then return B.PartyCoordinator end
+ local P=O.Player or game.Players.LocalPlayer local Players=O.Players or game.Players
+ local H=game:GetService("HttpService") local now=O.Now or os.time local clock=O.Clock or os.clock
+ local Q={alive=true,status="Checking online accounts",events={},lastAction={},attempts={},controls={},onlineSeconds=25}
+ B.PartyCoordinator=Q
+ local function read(path) if O.Read then return O.Read(path) end local ok,v=pcall(function() return H:JSONDecode(readfile(path)) end) return ok and type(v)=="table" and v or nil end
+ local function player(id) return Players:GetPlayerByUserId(id) end
+ function Q.online(account,members)
+  if account.id==P.UserId or player(account.id) then return true end
+  for _,m in ipairs(members or {}) do if m.id==account.id and now()-(m.at or 0)<=Q.onlineSeconds then return true end end
+  -- Native heartbeat also identifies a client that is still loading Inv++.
+  local v=read("HarvardLabs/data/af_"..account.name:lower()..".json")
+  return v and v.uid==account.id and now()-(v.at or 0)<=Q.onlineSeconds or false
+ end
+ function Q.required(members)
+  local out={} for _,a in ipairs(B.F.config.roster or {}) do if Q.online(a,members) then table.insert(out,{id=a.id,name=a.name}) end end
+  table.sort(out,function(a,b) return a.id<b.id end) return out
+ end
+ function Q.signature(members) local out={} for _,a in ipairs(Q.required(members)) do table.insert(out,tostring(a.id)) end return table.concat(out,",") end
+ B.requiredRoster=Q.required B.requiredSignature=Q.signature
+ function Q.nativeOnline(name)
+  name=tostring(name):lower()
+  if not Q.nativeCache or clock()-(Q.nativeCacheAt or -math.huge)>.5 then
+   Q.nativeCache={} Q.nativeCacheAt=clock() local members=B.F.members()
+   for _,a in ipairs(B.F.config.roster) do Q.nativeCache[a.name:lower()]=Q.online(a,members) end
+   for _,p in ipairs(Players:GetPlayers()) do Q.nativeCache[p.Name:lower()]=true end
+  end
+  if Q.nativeCache[name]~=nil then return Q.nativeCache[name] end
+  local v=read("HarvardLabs/data/af_"..name..".json") local online=v and now()-(v.at or 0)<=Q.onlineSeconds or false
+  Q.nativeCache[name]=online return online
+ end
+ function Q.missing(members)
+  local present={} for _,m in ipairs(members) do present[m.id]=true end
+  local out={} for _,a in ipairs(Q.required(members)) do if not present[a.id] then table.insert(out,a.name) end end return out
+ end
+ function Q.note(message)
+  Q.status=message
+  if not Q.events[1] or Q.events[1].message~=message then
+   table.insert(Q.events,1,{at=now(),message=message}) while #Q.events>8 do table.remove(Q.events) end
+  end
+ end
+ function Q.queueEnabled()
+  if C.CFG.autoQueue==true then return true end
+  local party=C.AF and C.AF.load() return party and party.on==true or false
+ end
+ function Q.setQueue(enabled)
+  C.CFG.autoQueue=enabled
+  if C.AF then local cfg=C.AF.load() cfg.on=enabled C.AF.save() end
+  if C.saveConfig then C.saveConfig() end B.lastPoll=-math.huge
+ end
+ function Q.leader(members)
+  for _,m in ipairs(members) do if m.harvard and m.harvard.leader then return m end end
+  return members[1]
+ end
+ local function value(parent,name) local x=parent and parent:FindFirstChild(name) return x and x:IsA("ValueBase") and x.Value end
+ function Q.startDecision(members,world)
+  if C.isEvent and C.isEvent() then return nil,"Event readiness is handled by Harvard's class selector" end
+  if B.F.config.lastError then return nil,"Stopped: "..B.F.config.lastError end
+  if not C.CFG.autoStartDungeon then return nil,"Auto start after loading is off" end
+  if not C.RT.farmEnabled or B.safetyPaused() then return nil,"Paused — enable farming to start" end
+  if world.started then return nil,"Dungeon running" end
+  if B.isLobby() then return nil,"Lobby — waiting for the queue" end
+  if B.finished() then return nil,"Run finished — checking drops before the next queue" end
+  local j=B.F.job if j and j.stage~="complete" and j.stage~="failed" and j.stage~="departing" then return nil,"Finishing "..j.stage.." before starting" end
+  local missing=Q.missing(members) if #missing>0 then return nil,"Waiting for Harvard to load on "..table.concat(missing,", ") end
+  for _,m in ipairs(members) do
+   if m.job~=world.job or m.lobby then return nil,"Waiting for "..m.name.." to enter this dungeon" end
+   if not m.harvard or now()-(m.harvard.at or 0)>5 then return nil,"Waiting for fresh Harvard status on "..m.name end
+   if m.harvard.blocked or m.harvard.farming==false then return nil,"Waiting for "..m.name.." to resume farming" end
+   if now()-(m.inventoryAt or 0)>15 then return nil,"Waiting for "..m.name.." to finish loading inventory" end
+  end
+  if not world.loaded then return nil,"Loading character and player data" end
+  if not world.stable then return nil,"Allowing online accounts to finish loading" end
+  if world.progress=="playersNotReady" and world.ready==false then return "readyUp","Readying this account" end
+  if world.progress=="playersNotReady" and world.ready==true then return nil,"Ready — waiting for the game's other players" end
+  local leader=Q.leader(members)
+  if world.canStart and leader and leader.id==P.UserId then
+   if world.owner and world.owner~=P.UserId then return nil,"Waiting for the dungeon owner to press Start" end
+   return "changeStartValue","Starting dungeon"
+  end
+  return nil,world.canStart and "Waiting for the party leader to start" or "Waiting for the game's Start / Ready state"
+ end
+ function Q.step()
+  local members=B.F.members() local required=Q.required(members) local signature=Q.signature(members)
+  if signature~=Q.lastSignature then Q.lastSignature=signature Q.changedAt=clock() end
+  Q.active=required Q.members=members
+  local lines={} local active={} for _,a in ipairs(required) do active[a.id]=true end
+  local byId={} for _,m in ipairs(members) do byId[m.id]=m end
+  for _,a in ipairs(B.F.config.roster) do
+   local m=byId[a.id] local status=not active[a.id] and "Offline · skipped" or not m and "Online · loading Harvard" or m.lobby and "Online · lobby" or m.job~=game.JobId and "Online · another server" or "Online · here"
+   table.insert(lines,a.name.." — "..status)
+  end Q.rosterText=table.concat(lines,"\n")
+  if B.isLobby() then
+   local missing=Q.missing(members)
+   Q.note(B.F.config.lastError and "Stopped: "..B.F.config.lastError or not Q.queueEnabled() and "Auto queue is off" or #missing>0 and "Waiting for Harvard on "..table.concat(missing,", ") or B.F.holding and B.F.status or "Queueing "..#required.." online account(s); offline accounts are skipped")
+  else
+   local char=P.Character local hum=char and char:FindFirstChildOfClass("Humanoid") local pg=P:FindFirstChild("PlayerGui")
+   local button=pg and pg:FindFirstChild("startButton",true)
+   local visible=button~=nil
+   if visible then local v=button while v and v~=pg do if v:IsA("GuiObject") and not v.Visible or v:IsA("ScreenGui") and not v.Enabled then visible=false break end v=v.Parent end end
+   local owner if C.runOwnerId then local ok,v=pcall(C.runOwnerId) if ok then owner=v end end
+   local world={job=game.JobId,started=B.started(),progress=tostring(value(workspace,"dungeonProgress") or ""),ready=value(P,"ready"),
+    loaded=value(P,"dataLoaded")==true and hum and hum.Health>0,stable=clock()-(Q.changedAt or clock())>=3,
+    canStart=value(workspace,"start")==false and visible,owner=owner}
+   local action,message=Q.startDecision(members,world)
+   if action and (Q.attempts[action] or 0)>=3 then
+    message="Game did not confirm "..action.." after 3 attempts — use Retry start / queue" action=nil
+   elseif action and clock()-(Q.lastAction[action] or -math.huge)<5 then message=message.." — waiting for game confirmation" end
+   Q.note(message)
+   if action and clock()-(Q.lastAction[action] or -math.huge)>=5 then
+    local remote=game.ReplicatedStorage:FindFirstChild("remotes") remote=remote and remote:FindFirstChild(action)
+    if remote and remote:IsA("RemoteEvent") then
+     Q.lastAction[action]=clock() Q.attempts[action]=(Q.attempts[action] or 0)+1 remote:FireServer() Q.note(message.." — waiting for game confirmation")
+    end
+   end
+  end
+  if not B.F.holding then B.F.status=Q.status end
+  if Q.summary then
+   local leader=Q.leader(members)
+   Q.summary.Text=#required.." online / "..#B.F.config.roster.." saved · leader: "..(leader and leader.name or "waiting").."\n"..Q.status
+   Q.roster.Text=Q.rosterText
+   local lines={} for i,e in ipairs(Q.events) do if i<=5 then table.insert(lines,os.date("%H:%M:%S",e.at).." · "..e.message) end end Q.history.Text=table.concat(lines,"\n")
+  end
+ end
+ function Q.mount()
+  if Q.mounted or not C.Shell then return end Q.mounted=true
+  local ui=C.UIKit local parent=C.Shell.pages.AltFarm.body
+  local box=ui.section(parent,"Party status",1,"Offline saved accounts are skipped automatically. Online accounts wait for one another; transfers in progress keep their participants until completed.")
+  local reg=C.sectionReg[box.holder] if reg then reg.setOpen(true,true) end
+  Q.summary=ui.caption(box.content,Q.status,1)
+  Q.roster=ui.caption(box.content,"Checking online accounts",2)
+  table.insert(Q.controls,ui.toggle(box.content,"Auto queue from lobby",Q.queueEnabled,Q.setQueue,3,"Create and join the next dungeon using the party's saved dungeon settings."))
+  table.insert(Q.controls,ui.toggle(box.content,"Auto start after loading",function() return C.CFG.autoStartDungeon==true end,function(v) C.CFG.autoStartDungeon=v C.saveConfig() end,4,"Press the game's Start / Ready action once the online accounts have loaded."))
+  ui.caption(box.content,"Flow: Queue → join → load → start → farm → check useful drops → trade only if needed → queue again. Guests join normally; they do not need Harvard or inventory telemetry.",5)
+  ui.button(box.content,"Refresh party status","subtle",function() B.F.publish(true) Q.step() for _,c in ipairs(Q.controls) do c.render() end end,6)
+  ui.button(box.content,"Retry start / queue","subtle",function()
+   Q.attempts={} Q.lastAction={}
+   local j=B.F.job
+   if j and j.stage=="failed" and j.queueOnly then B.F.setAutomatic(true) end
+   Q.note("Retry requested — all online-account and transfer checks still apply")
+  end,7)
+  Q.history=ui.caption(box.content,"",8)
+ end
+ local baseStep=B.F.step
+ if baseStep then
+  Q.stepWrapper=function(...) local result=table.pack(baseStep(...)) if Q.alive and not B.F.holding then B.F.status=Q.status end return table.unpack(result,1,result.n) end
+  B.F.step=Q.stepWrapper
+ end
+ function Q.destroy()
+  Q.alive=false B.requiredRoster=nil B.requiredSignature=nil
+  if B.F.step==Q.stepWrapper then B.F.step=baseStep end
+ end
+ if not O.NoWorker then task.spawn(function()
+  while Q.alive and B.alive do
+   if B.isLobby and B.ready then local ok,err=pcall(Q.step) if not ok then Q.note("Party status error: "..tostring(err):sub(1,120)) end
+   else Q.note("Loading party coordinator") end
+   task.wait(.5)
+  end
+ end) end
+ return Q
 end
 ]=],
 ["inv++/harvard_party_dashboard.lua"]=[=[
@@ -173550,6 +175229,99 @@ return function(context,B,parent,track)
  B.library=L return L
 end
 ]=],
+["inv++/harvard_webhook_art.lua"]=[=[
+-- Universal game-image resolver. This module never posts a webhook.
+return function(C,B,O)
+ O=O or {} if B.WebhookArt then return B.WebhookArt end
+ local H=game:GetService("HttpService") local now=O.Now or os.time
+ local R={ids={},variants={},cache={},retryAt={},mapChecked={},status="Ready",catalogNames=0}
+ B.WebhookArt=R local cachePath="Inv++/harvard_art_cdn.json"
+ local function key(name) return tostring(name or ""):lower():gsub("[^%w]",""):gsub("armour","armor") end
+ local function asset(image)
+  local text=tostring(image or ""):lower()
+  local id=text:match("^rbxassetid://(%d+)") or text:match("[?&]id=(%d+)") or text:match("^(%d+)$")
+  return id and tonumber(id) and tonumber(id)>0 and id or nil
+ end
+ local function cdn(url)
+  local host=type(url)=="string" and url:match("^https://([^/]+)/")
+  return host and (host=="rbxcdn.com" or host:sub(-11)==".rbxcdn.com") or false
+ end
+ local function image(value)
+  if cdn(value) then return value end
+  local id=asset(value) return id and "rbxassetid://"..id or nil
+ end
+ R.assetID=asset R.isCDN=cdn
+ function R.index(items)
+  local changed=0
+  for _,item in pairs(items or {}) do if type(item)=="table" then
+   local name=key(item.name) local art=image(item.imageId)
+   if name~="" and art then
+    if not R.ids[name] then R.catalogNames+=1 changed+=1 end R.ids[name]=art
+    if type(item.rarity)=="string" and item.rarity~="" then R.variants[name.."|"..item.rarity:lower()]=art end
+   end
+  end end return changed
+ end
+ local catalog=O.Catalog
+ if not catalog then local ok,v=pcall(function() return assert(loadstring(readfile("Inv++/harvard_art_catalog.lua"),"DQR item image catalog"))() end) if ok then catalog=v end end
+ if catalog then R.index(catalog.items or catalog) for id,v in pairs(catalog.thumbnails or {}) do if type(v)=="table" and cdn(v.url) then R.cache[tostring(id)]=v end end end
+ if O.Cache then R.cache=O.Cache elseif not O.Resolve then
+  pcall(function() local data=H:JSONDecode(readfile(cachePath)) if data.version==1 and type(data.items)=="table" then
+   for id,v in pairs(data.items) do if type(v)=="table" and cdn(v.url) and (not R.cache[id] or (tonumber(v.expires) or 0)>(tonumber(R.cache[id].expires) or 0)) then R.cache[id]=v end end
+  end end)
+ end
+ local function save()
+  if O.NoSave or O.Resolve then return end
+  pcall(function() writefile(cachePath,H:JSONEncode({version=1,items=R.cache})) end)
+ end
+ function R.refresh(map)
+  if O.NoRefresh or O.Resolve or type(map)~="string" or map=="" or now()-(R.mapChecked[map] or -math.huge)<600 then return false end
+  R.mapChecked[map]=now()
+  local ok,data=pcall(function() local remotes=game.ReplicatedStorage:FindFirstChild("remotes") local remote=remotes and remotes:FindFirstChild("getDungeonStats") return remote and remote:InvokeServer(map) end)
+  if not ok or type(data)~="table" or type(data.possibleDrops)~="table" then return false end
+  for _,items in pairs(data.possibleDrops) do if type(items)=="table" then R.index(items) end end return true
+ end
+ function R.image(item)
+  if type(item)~="table" then return nil end
+  local direct=image(item.imageId) if direct then R.index({item}) return direct end
+  local name=key(item.name) if name=="" then return nil end
+  local variant=name.."|"..tostring(item.rarity or ""):lower()
+  if R.variants[variant] or R.ids[name] then return R.variants[variant] or R.ids[name] end
+  for _,r in pairs(B.A.index or {}) do if r.item and key(r.item.name)==name and image(r.item.imageId) then R.index({r.item}) return R.variants[variant] or R.ids[name] end end
+  for _,e in pairs(B.A.History and B.A.History.store.items or {}) do
+   local i=e.snapshot and e.snapshot.item
+   if i and key(i.name)==name and image(i.imageId) then R.index({i}) return R.variants[variant] or R.ids[name] end
+  end
+  local map=workspace:FindFirstChild("dungeonName")
+  if map and map:IsA("ValueBase") then R.refresh(tostring(map.Value)) end
+  return R.variants[variant] or R.ids[name]
+ end
+ function R.resolve(item)
+  if C.CFG.whImages==false then return nil end
+  local art=R.image(item) if not art then R.status="No game image supplied for "..tostring(item and item.name) return nil end
+  if cdn(art) then return art end
+  local id=asset(art) local cached=id and R.cache[id]
+  if cached and cdn(cached.url) and (tonumber(cached.expires) or 0)>now() then return cached.url end
+  if id and (R.retryAt[id] or 0)>now() then return cached and cdn(cached.url) and cached.url or nil end
+  local resolver=O.Resolve or B.A.Webhook and B.A.Webhook.resolveArt
+  if not resolver then R.status="Image resolver unavailable" return cached and cdn(cached.url) and cached.url or nil end
+  local ok,url=pcall(resolver,art)
+  if ok and cdn(url) then
+   R.cache[id]={url=url,expires=now()+86400} R.retryAt[id]=nil save()
+   R.status="Resolved game art for "..tostring(item.name) return url
+  end
+  R.retryAt[id]=now()+30
+  -- CDN URLs identify immutable content; a known URL survives a temporary lookup outage.
+  if cached and cdn(cached.url) then R.status="Using cached game art; Roblox lookup will retry later" return cached.url end
+  R.status="Roblox image is pending or unavailable; lookup will retry later" return nil
+ end
+ function R.coverage()
+  local assets={} local valid=0 for _,v in pairs(R.ids) do local id=asset(v) if id then assets[id]=true end end
+  local total=0 for id in pairs(assets) do total+=1 if R.cache[id] and cdn(R.cache[id].url) then valid+=1 end end
+  return {names=R.catalogNames,assets=total,cachedURLs=valid}
+ end
+ return R
+end
+]=],
 ["inv++/party_hover.lua"]=[=[
 -- Clone DQR's tooltip UI; remote equipment uses explicit shared item data only.
 return function(B,D)
@@ -173722,7 +175494,7 @@ return function(files,bootstrap,version,entry,testing)
  return result
 end
 ]=]
-return assert(loadstring(bootstrap,'Harvard package bootstrap'))()(files,bootstrap,"fd9d1700a6b73b9f",[=[
+return assert(loadstring(bootstrap,'Harvard package bootstrap'))()(files,bootstrap,"613916e0d35e8adc",[=[
 local old=getgenv().InvPlusHarvardContext
 if old and old.RT and not old.RT.destroyed and old.InvPlusTransfers and old.InvPlusTransfers.PackageInfo and old.InvPlusTransfers.PackageInfo.version==InvPlusPackageInfo.version then return old end
 local stat=getgenv().InvPlusAutoStat
